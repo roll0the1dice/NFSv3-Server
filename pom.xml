@@ -56,6 +56,12 @@
       <artifactId>vertx-web</artifactId>
     </dependency>
 
+    <dependency>
+      <groupId>org.projectlombok</groupId>
+      <artifactId>lombok</artifactId>
+      <version>1.18.32</version> <!-- 使用最新稳定版 -->
+      <scope>provided</scope> <!-- 重要：Lombok 是编译时工具，运行时不需要 -->
+    </dependency>
 
     <dependency>
       <groupId>io.vertx</groupId>

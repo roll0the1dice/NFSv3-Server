@@ -50,13 +50,38 @@ public class TcpServerVerticle extends AbstractVerticle {
         }
         System.out.println("---- End of Raw Buffer ----");
 
-        int clientXid = extractXid(buffer.getBytes());
 
-        byte[] xdrReplyBytes = createNfsNullReply(clientXid);
-
-        socket.write(Buffer.buffer(xdrReplyBytes));
+        int recordMakerRaw = buffer.getInt(0);
+        int xid = buffer.getInt(4);
+        int msgType = buffer.getInt(8); // Should be CALL (0)
+        int rpcVersion = buffer.getInt(12); // Should be 2
+        int programNumber = buffer.getInt(16);
+        int programVersion = buffer.getInt(20);
+        int procedureNumber = buffer.getInt(24);
+        int credentialsFlavor = buffer.getInt(28);
+        int credentialsBodyLength = buffer.getInt(32);
+        CredentialsInRPC credentialsInRPC = null;
+        if (credentialsBodyLength > 0) {
+          credentialsInRPC = new CredentialsInRPC(buffer.slice(36, 36 + credentialsBodyLength).getBytes());
+        }
+        int startOffset = 36 + credentialsBodyLength;
+        int verifierFlavor = buffer.getInt(startOffset);
+        int verifierLength = buffer.getInt(startOffset + 4);
 
         // Echo 回复给客户端
+        byte[] xdrReplyBytes = createNfsNullReply(xid);
+
+        System.out.println("Raw response buffer (" + buffer.length() + " bytes):");
+        // 简单的十六进制打印
+        for (int i = 0; i < xdrReplyBytes.length; i++) {
+          System.out.printf("%02X ", xdrReplyBytes[i]);
+          if ((i + 1) % 16 == 0 || i == xdrReplyBytes.length - 1) {
+            System.out.println();
+          }
+        }
+        System.out.println("---- End of Raw response Buffer ----");
+
+        socket.write(Buffer.buffer(xdrReplyBytes));
 
         // 如果客户端发送 "quit"，则关闭连接
         if ("quit".equalsIgnoreCase(receivedData.trim())) {
