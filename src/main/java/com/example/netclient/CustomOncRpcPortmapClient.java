@@ -11,8 +11,8 @@ public class CustomOncRpcPortmapClient {
   //public static final int CUSTOM_PORTMAPPER_PORT = 8111; // 你自定义的 "portmapper" 监听的端口
 
   // 你要查询的目标服务的信息 (这些是 getPort 方法的参数)
-  public static final int TARGET_PROGRAM_NUMBER = 0x20000001;
-  public static final int TARGET_PROGRAM_VERSION = 1;
+  public static final int TARGET_PROGRAM_NUMBER = 100003;
+  public static final int TARGET_PROGRAM_VERSION = 3;
 
   public static void main(String[] args) {
     OncRpcPortmapClient portmapClient = null;
@@ -24,11 +24,13 @@ public class CustomOncRpcPortmapClient {
       //InetSocketAddress customPortmapperAddress = new InetSocketAddress(InetAddress.getByName(SERVER_HOST));
       InetAddress serverAddress = InetAddress.getByName(SERVER_HOST);
 
+
+
       // 使用 OncRpcPortmapClient(InetSocketAddress, int program, int version, int protocol)
       // program 和 version 这里指的是 portmapper 自身的程序号和版本号。
       portmapClient = new OncRpcPortmapClient(
-        serverAddress                // 连接到这个地址
-        //OncRpcProtocols.ONCRPC_TCP              // 使用 TCP 与 "portmapper" 通信
+        serverAddress,                // 连接到这个地址
+        OncRpcProtocols.ONCRPC_TCP              // 使用 TCP 与 "portmapper" 通信
       );
 
       System.out.println("CLIENT: OncRpcPortmapClient (potentially to custom port) created.");

@@ -11,6 +11,7 @@ import io.vertx.core.net.NetServerOptions;
 import io.vertx.core.net.NetSocket;
 
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.*;
 
 public class CustomPortmapperVerticle extends AbstractVerticle {
@@ -66,7 +67,7 @@ public class CustomPortmapperVerticle extends AbstractVerticle {
     // 预注册一个示例服务
     // 比如，我们的自定义服务 MY_AWESOME_PROG (0x20000001), version 1, TCP, on port 9999
     registerService(100003, 3, IPPROTO_TCP, 12345);
-    registerService(100005, 3, IPPROTO_UDP, 12346);
+    registerService(100005, 3, IPPROTO_TCP, 23333);
 
 
     // --- TCP Server ---
@@ -171,23 +172,67 @@ public class CustomPortmapperVerticle extends AbstractVerticle {
   }
 
   private Buffer createGetPortReply(int xid, int port) {
-    Buffer reply = Buffer.buffer(28 + 4); // Standard reply size for GETPORT
-    int recordMakerRaw = 0x80000000 | 28;
-    reply.appendInt(recordMakerRaw);
-    // XID
-    reply.appendInt(xid);
-    // Message Type (REPLY = 1)
-    reply.appendInt(MSG_TYPE_REPLY);
-    // Reply Status (MSG_ACCEPTED = 0)
-    reply.appendInt(REPLY_STAT_MSG_ACCEPTED);
-    // Verifier (AUTH_NULL)
-    reply.appendInt(AUTH_NULL_FLAVOR); // Flavor
-    reply.appendInt(AUTH_NULL_LENGTH); // Length
-    // Accept Status (SUCCESS = 0)
-    reply.appendInt(ACCEPT_STAT_SUCCESS);
-    // Port Number
-    reply.appendInt(port);
-    return reply;
+//    Buffer reply = Buffer.buffer(28 + 4); // Standard reply size for GETPORT
+//    int recordMakerRaw = 0x80000000 | 28;
+//    reply.appendInt(recordMakerRaw);
+//    // XID
+//    reply.appendInt(xid);
+//    // Message Type (REPLY = 1)
+//    reply.appendInt(MSG_TYPE_REPLY);
+//    // Reply Status (MSG_ACCEPTED = 0)
+//    reply.appendInt(REPLY_STAT_MSG_ACCEPTED);
+//    // Verifier (AUTH_NULL)
+//    reply.appendInt(AUTH_NULL_FLAVOR); // Flavor
+//    reply.appendInt(AUTH_NULL_LENGTH); // Length
+//    // Accept Status (SUCCESS = 0)
+//    reply.appendInt(ACCEPT_STAT_SUCCESS);
+//    // Port Number
+//    reply.appendInt(port);
+
+    final int rpcMessageBodyLength = 28;
+
+    // --- Create ByteBuffer for the RPC Message Body ---
+    // We will fill this first, then prepend the record mark.
+    ByteBuffer rpcBodyBuffer = ByteBuffer.allocate(rpcMessageBodyLength);
+    rpcBodyBuffer.order(ByteOrder.BIG_ENDIAN); // XDR is Big Endian
+
+    // 1. XID (Transaction Identifier) - from request
+    rpcBodyBuffer.putInt(xid);
+
+    // 2. Message Type (mtype)
+    rpcBodyBuffer.putInt(MSG_TYPE_REPLY);
+
+    // 3. Reply Body (reply_body)
+    //    3.1. Reply Status (stat of union switch (msg_type mtype))
+    rpcBodyBuffer.putInt(REPLY_STAT_MSG_ACCEPTED);
+
+    //    3.2. Accepted Reply (areply)
+    //        3.2.1. Verifier (verf - opaque_auth structure)
+    rpcBodyBuffer.putInt(AUTH_NULL_FLAVOR); // Flavor
+    rpcBodyBuffer.putInt(AUTH_NULL_LENGTH);      // Length of body (0 for AUTH_NONE)
+    // Body is empty
+
+    //        3.2.2. Acceptance Status (stat of union switch (accept_stat stat))
+    rpcBodyBuffer.putInt(ACCEPT_STAT_SUCCESS);
+
+    //        3.2.3. Results (for NFSPROC3_NULL, this is void, so no data)
+    rpcBodyBuffer.putInt(port);
+    // --- Construct Record Marking ---
+    // Highest bit set (0x80000000) ORed with the length of the RPC message body.
+    // In Java, an int is 32-bit.
+    int recordMarkValue = 0x80000000 + rpcMessageBodyLength;
+
+    // --- Create ByteBuffer for the Full XDR Response ---
+    // Record Mark (4 bytes) + RPC Message Body (rpcMessageBodyLength bytes)
+    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcMessageBodyLength);
+    fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
+
+    // Put the record mark
+    fullResponseBuffer.putInt(recordMarkValue);
+    // Put the RPC message body (which is already in rpcBodyBuffer)
+    fullResponseBuffer.put(rpcBodyBuffer.array()); // .array() gets the underlying byte array
+
+    return Buffer.buffer(fullResponseBuffer.array());
   }
 
   public static void main(String[] args) {
