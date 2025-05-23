@@ -48,11 +48,9 @@ public class TcpServerVerticle extends AbstractVerticle {
         }
         System.out.println("---- End of Raw Buffer ----");
 
-        int clientXid = 12345; // Example XID from a client request
+        int clientXid = extractXid(buffer.getBytes());
 
-        int xid = extractXid(buffer.getBytes());
-
-        byte[] xdrReplyBytes = createNfsNullReply(xid);
+        byte[] xdrReplyBytes = createNfsNullReply(clientXid);
 
         socket.write(Buffer.buffer(xdrReplyBytes));
 
