@@ -1,5 +1,6 @@
 package com.example.netclient;
 
+import com.example.netclient.utils.NetTool;
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.Promise;
 import io.vertx.core.buffer.Buffer;
@@ -9,9 +10,8 @@ import io.vertx.core.net.NetServer;
 import io.vertx.core.net.NetServerOptions;
 import io.vertx.core.net.NetSocket;
 
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Objects;
+import java.nio.ByteBuffer;
+import java.util.*;
 
 public class CustomPortmapperVerticle extends AbstractVerticle {
 
@@ -65,8 +65,8 @@ public class CustomPortmapperVerticle extends AbstractVerticle {
   public void start(Promise<Void> startPromise) {
     // 预注册一个示例服务
     // 比如，我们的自定义服务 MY_AWESOME_PROG (0x20000001), version 1, TCP, on port 9999
-    registerService(0x20000001, 1, IPPROTO_TCP, 9999);
-    registerService(0x20000001, 1, IPPROTO_UDP, 9998);
+    registerService(100003, 3, IPPROTO_TCP, 12345);
+    registerService(100005, 3, IPPROTO_UDP, 12346);
 
 
     // --- TCP Server ---
@@ -94,37 +94,18 @@ public class CustomPortmapperVerticle extends AbstractVerticle {
   }
 
   private void handleTcpConnection(NetSocket socket) {
-//    socket.handler(buffer -> {
-//      System.out.println("TCP: Received " + buffer.length() + " bytes from " + socket.remoteAddress());
-//      Buffer reply = processRpcRequest(buffer);
-//      if (reply != null) {
-//        socket.write(reply);
-//      } else {
-//        // Optional: close connection if request is invalid or not handled
-//        // socket.close();
-//      }
-//    });
-//    socket.exceptionHandler(t -> System.err.println("TCP Socket Exception: " + t.getMessage()));
-    System.out.println("SERVER: TCP Connection established from " + socket.remoteAddress() +
-      " to " + socket.localAddress() + ". Socket ID: " + socket.toString()); // 添加套接字ID
-
     socket.handler(buffer -> {
-      System.out.println("SERVER: Received " + buffer.length() + " bytes on socket " + socket.toString() +
-        " from " + socket.remoteAddress());
-      // ... (rest of your buffer processing)
+      System.out.println("TCP: Received " + buffer.length() + " bytes from " + socket.remoteAddress());
+      Buffer reply = processRpcRequest(buffer);
+      if (reply != null) {
+        socket.write(reply);
+      } else {
+        // Optional: close connection if request is invalid or not handled
+        // socket.close();
+      }
     });
+    socket.exceptionHandler(t -> System.err.println("TCP Socket Exception: " + t.getMessage()));
 
-    socket.closeHandler(v -> {
-      System.out.println("SERVER: TCP Connection closed by " + socket.remoteAddress() +
-        ". Socket ID: " + socket.toString());
-    });
-
-    socket.exceptionHandler(t -> {
-      System.err.println("SERVER: TCP Socket Exception on socket " + socket.toString() +
-        " from " + socket.remoteAddress() + ": " + t.getMessage());
-      t.printStackTrace(); // 打印完整堆栈
-      // socket.close(); // 确保异常后关闭
-    });
     System.out.println("SERVER: Handlers set for socket " + socket.toString());
   }
 
@@ -146,12 +127,13 @@ public class CustomPortmapperVerticle extends AbstractVerticle {
     System.out.println("---- End of Raw Buffer ----");
 
     try {
-      int xid = request.getInt(0);
-      int msgType = request.getInt(4); // Should be CALL (0)
-      // int rpcVersion = request.getInt(8); // Should be 2
-      int program = request.getInt(12);
-      int version = request.getInt(16);
-      int procedure = request.getInt(20);
+      int recordMakerRaw = request.getInt(0);
+      int xid = request.getInt(4);
+      int msgType = request.getInt(8); // Should be CALL (0)
+      int rpcVersion = request.getInt(12); // Should be 2
+      int program = request.getInt(16);
+      int version = request.getInt(20);
+      int procedure = request.getInt(24);
 
       // We only care about calls to portmapper program, version 2, procedure GETPORT
       if (msgType == MSG_TYPE_CALL &&
@@ -161,9 +143,9 @@ public class CustomPortmapperVerticle extends AbstractVerticle {
 
         // Parse GETPORT arguments (offset starts after RPC header + cred + verf = 24 bytes)
         // Offset for prog_to_lookup is 24 (header) + 8 (cred) + 8 (verf) = 40
-        int progToLookup = request.getInt(40);
-        int versToLookup = request.getInt(44);
-        int protToLookup = request.getInt(48);
+        int progToLookup = request.getInt(44);
+        int versToLookup = request.getInt(48);
+        int protToLookup = request.getInt(52);
         // int unused = request.getInt(52);
 
         System.out.println(String.format("GETPORT request: XID=0x%x, Prog=0x%x, Vers=%d, Prot=%d",
@@ -175,6 +157,7 @@ public class CustomPortmapperVerticle extends AbstractVerticle {
         );
 
         System.out.println("Responding with port: " + portResult);
+
         return createGetPortReply(xid, portResult);
       } else {
         System.out.println(String.format("Ignoring RPC call: XID=0x%x, Prog=0x%x, Vers=%d, Proc=%d",
@@ -188,7 +171,9 @@ public class CustomPortmapperVerticle extends AbstractVerticle {
   }
 
   private Buffer createGetPortReply(int xid, int port) {
-    Buffer reply = Buffer.buffer(28); // Standard reply size for GETPORT
+    Buffer reply = Buffer.buffer(28 + 4); // Standard reply size for GETPORT
+    int recordMakerRaw = 0x80000000 | 28;
+    reply.appendInt(recordMakerRaw);
     // XID
     reply.appendInt(xid);
     // Message Type (REPLY = 1)

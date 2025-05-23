@@ -5,11 +5,10 @@ import org.acplt.oncrpc.*;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.net.UnknownHostException;
 
-public class Test {
+public class CustomOncRpcPortmapClient {
   public static final String SERVER_HOST = "localhost";
-  public static final int CUSTOM_PORTMAPPER_PORT = 8111; // 你自定义的 "portmapper" 监听的端口
+  //public static final int CUSTOM_PORTMAPPER_PORT = 8111; // 你自定义的 "portmapper" 监听的端口
 
   // 你要查询的目标服务的信息 (这些是 getPort 方法的参数)
   public static final int TARGET_PROGRAM_NUMBER = 0x20000001;
@@ -19,19 +18,17 @@ public class Test {
     OncRpcPortmapClient portmapClient = null;
     try {
       System.out.println("CLIENT: Creating OncRpcPortmapClient to connect to " +
-        SERVER_HOST + ":" + CUSTOM_PORTMAPPER_PORT);
+        SERVER_HOST);
 
       // 构造 InetSocketAddress 指向你的自定义 "portmapper" 服务
-      InetSocketAddress customPortmapperAddress = new InetSocketAddress(
-        InetAddress.getByName(SERVER_HOST),
-        CUSTOM_PORTMAPPER_PORT
-      );
+      //InetSocketAddress customPortmapperAddress = new InetSocketAddress(InetAddress.getByName(SERVER_HOST));
+      InetAddress serverAddress = InetAddress.getByName(SERVER_HOST);
 
       // 使用 OncRpcPortmapClient(InetSocketAddress, int program, int version, int protocol)
       // program 和 version 这里指的是 portmapper 自身的程序号和版本号。
       portmapClient = new OncRpcPortmapClient(
-        customPortmapperAddress.getAddress(),                 // 连接到这个地址
-        OncRpcProtocols.ONCRPC_TCP              // 使用 TCP 与 "portmapper" 通信
+        serverAddress                // 连接到这个地址
+        //OncRpcProtocols.ONCRPC_TCP              // 使用 TCP 与 "portmapper" 通信
       );
 
       System.out.println("CLIENT: OncRpcPortmapClient (potentially to custom port) created.");

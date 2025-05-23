@@ -11,6 +11,8 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.ArrayList;
+import java.util.List;
 
 
 public class TcpServerVerticle extends AbstractVerticle {
@@ -36,7 +38,7 @@ public class TcpServerVerticle extends AbstractVerticle {
       // 为每个连接的 socket 设置数据处理器
       socket.handler(buffer -> {
         String receivedData = buffer.toString("UTF-8");
-        System.out.println("从客户端 [" + socket.remoteAddress() + "] 收到数据: " + receivedData.trim());
+        System.out.println("从客户端 [" + socket.remoteAddress() + "] 收到数据大小: " + receivedData.length());
 
         System.out.println("Raw request buffer (" + buffer.length() + " bytes):");
         // 简单的十六进制打印
@@ -195,6 +197,43 @@ public class TcpServerVerticle extends AbstractVerticle {
     int xid = buffer.getInt();
 
     return xid;
+  }
+
+  public static void handleRPCRequest(Buffer buffer) {
+    List<byte[]> fragmentDataList = new ArrayList<>();
+
+    boolean lastFragmentReceived = false;
+    int totalLength = 0;
+
+    while (!lastFragmentReceived) {
+      int recordMakerRaw = buffer.getInt(0);
+
+      boolean isLastFragment = (recordMakerRaw & 0x80000000) != 0;
+      int fragmentLength = recordMakerRaw & 0x7FFFFFFF;
+
+      // 跳过开头的RMS
+      int dataStartOffset = 4;
+      if (fragmentLength > 0 && buffer.length() > dataStartOffset) {
+        Buffer bufferSlice = buffer.slice(dataStartOffset, fragmentLength - dataStartOffset);
+        fragmentDataList.add(bufferSlice.getBytes());
+      }
+
+      totalLength += fragmentLength;
+      lastFragmentReceived = isLastFragment;
+    }
+
+    FullRpcMessage fullRpcMessage = null;
+    if (totalLength > 0 && fragmentDataList.size() > 0) {
+      ByteBuffer fullMessageBuffer = ByteBuffer.allocate(totalLength);
+      for (byte[] fragmentData : fragmentDataList) {
+        fullMessageBuffer.put(fragmentData);
+      }
+      fullRpcMessage = new FullRpcMessage(fullMessageBuffer.array());
+    }
+
+    if (fullRpcMessage != null) {
+      fullRpcMessage.decodeAndPrint();
+    }
   }
 
 }

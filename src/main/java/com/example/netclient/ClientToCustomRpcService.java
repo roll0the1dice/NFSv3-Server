@@ -37,8 +37,8 @@ public class ClientToCustomRpcService {
       client = new OncRpcTcpClient(
         serverAddress,  // Server's IP address
         programNumber,  // RPC Program number
-        versionNumber,  // RPC Version number
-        12345               // Port number (0 means use portmapper)
+        versionNumber  // RPC Version number
+        //12345               // Port number (0 means use portmapper)
       );
 
       // You can set a timeout for RPC calls (in milliseconds)
