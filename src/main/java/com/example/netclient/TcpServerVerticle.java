@@ -39,94 +39,52 @@ public class TcpServerVerticle extends AbstractVerticle {
     server.connectHandler(socket -> {
       log.info("客户端连接成功: " + socket.remoteAddress());
 
-      // 创建一个消息状态对象来保存状态
-      class MessageState {
-        Buffer messageAccumulator = Buffer.buffer();
-        boolean isLastFragment = false;
-        int expectedLength = 0;
-      }
-      final MessageState state = new MessageState();
-
       // 为每个连接的 socket 设置数据处理器
       socket.handler(buffer -> {
-        try {
-          // 将新数据添加到累积器
-          state.messageAccumulator.appendBuffer(buffer);
-          
-          // 处理累积的消息
-          while (state.messageAccumulator.length() >= 4) { // 至少需要4字节来读取记录标记
-            if (state.expectedLength == 0) {
-              // 读取记录标记
-              int recordMarker = state.messageAccumulator.getInt(0);
-              state.isLastFragment = (recordMarker & 0x80000000) != 0;
-              state.expectedLength = recordMarker & 0x7FFFFFFF;
-              
-              log.info("Received fragment - Last: {}, Length: {}", state.isLastFragment, state.expectedLength);
-            }
-            
-            // 检查是否收到完整的消息
-            if (state.messageAccumulator.length() >= state.expectedLength) {
-              // 提取完整的消息
-              Buffer completeMessage = state.messageAccumulator.slice(0, state.expectedLength);
-              
-              // 处理完整的消息
-              String receivedData = completeMessage.toString("UTF-8");
-              log.info("从客户端 [" + socket.remoteAddress() + "] 收到数据大小: " + receivedData.length() + ", expectedLength: " + state.expectedLength);
+        String receivedData = buffer.toString("UTF-8");
+        log.info("从客户端 [" + socket.remoteAddress() + "] 收到数据大小: " + receivedData.length());
 
-              log.info("Raw request buffer (" + completeMessage.length() + " bytes):");
-              // 简单的十六进制打印
-              for (int i = 0; i < completeMessage.length(); i++) {
-                System.out.printf("%02X ", completeMessage.getByte(i));
-                if ((i + 1) % 16 == 0 || i == completeMessage.length() - 1) {
-                  System.out.println();
-                }
-              }
-              log.info("---- End of Raw request Buffer ----");
-
-              // Parse RPC header
-              int recordMakerRaw = completeMessage.getInt(0);
-              int xid = completeMessage.getInt(4);
-              int msgType = completeMessage.getInt(8); // Should be CALL (0)
-              int rpcVersion = completeMessage.getInt(12); // Should be 2
-              int programNumber = completeMessage.getInt(16);
-              int programVersion = completeMessage.getInt(20);
-              int procedureNumber = completeMessage.getInt(24);
-
-              // Handle NFS requests
-              if (programNumber == NFS_PROGRAM && programVersion == NFS_VERSION) {
-                handleNFSRequest(completeMessage, socket);
-              }
-              // Handle NFS_ACL requests
-              else if (programNumber == NFS_ACL_PROGRAM && programVersion == NFS_ACL_VERSION) {
-                handleNFSACLRequest(completeMessage, socket);
-              }
-              // Handle MOUNT requests
-              else if (programNumber == MOUNT_PROGRAM && programVersion == MOUNT_VERSION) {
-                // TODO: Implement MOUNT request handling
-                log.info("MOUNT request received - XID: 0x{}, Procedure: {}", 
-                    Integer.toHexString(xid), procedureNumber);
-              }
-              else {
-                log.error("Unsupported program: program={}, version={}", programNumber, programVersion);
-              }
-
-              // 移除已处理的消息
-              state.messageAccumulator = state.messageAccumulator.slice(state.expectedLength, state.messageAccumulator.length());
-              
-              // 重置状态
-              state.expectedLength = 0;
-              state.isLastFragment = false;
-            } else {
-              // 消息不完整，等待更多数据
-              break;
-            }
+        log.info("Raw request buffer (" + buffer.length() + " bytes):");
+        // 简单的十六进制打印
+        for (int i = 0; i < buffer.length(); i++) {
+          System.out.printf("%02X ", buffer.getByte(i));
+          if ((i + 1) % 16 == 0 || i == buffer.length() - 1) {
+            System.out.println();
           }
-        } catch (Exception e) {
-          log.error("Error processing message", e);
-          // 发生错误时清空累积器
-          state.messageAccumulator = Buffer.buffer();
-          state.expectedLength = 0;
-          state.isLastFragment = false;
+        }
+        log.info("---- End of Raw request Buffer ----");
+
+        // Parse RPC header
+        int recordMakerRaw = buffer.getInt(0);
+        int xid = buffer.getInt(4);
+        int msgType = buffer.getInt(8); // Should be CALL (0)
+        int rpcVersion = buffer.getInt(12); // Should be 2
+        int programNumber = buffer.getInt(16);
+        int programVersion = buffer.getInt(20);
+        int procedureNumber = buffer.getInt(24);
+
+        // Handle NFS requests
+        if (programNumber == NFS_PROGRAM && programVersion == NFS_VERSION) {
+          handleNFSRequest(buffer, socket);
+        }
+        // Handle NFS_ACL requests
+        else if (programNumber == NFS_ACL_PROGRAM && programVersion == NFS_ACL_VERSION) {
+          handleNFSACLRequest(buffer, socket);
+        }
+        // Handle MOUNT requests
+        else if (programNumber == MOUNT_PROGRAM && programVersion == MOUNT_VERSION) {
+          // TODO: Implement MOUNT request handling
+          log.info("MOUNT request received - XID: 0x{}, Procedure: {}", 
+              Integer.toHexString(xid), procedureNumber);
+        }
+        else {
+          log.error("Unsupported program: program={}, version={}", programNumber, programVersion);
+        }
+
+        // 如果客户端发送 "quit"，则关闭连接
+        if ("quit".equalsIgnoreCase(receivedData.trim())) {
+          log.info("客户端 [" + socket.remoteAddress() + "] 请求关闭连接。");
+          socket.close();
         }
       });
 
