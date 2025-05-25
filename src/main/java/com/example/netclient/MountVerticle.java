@@ -80,29 +80,43 @@ public class MountVerticle extends AbstractVerticle {
 
         log.info("path: {}, pathOfLength: {}", path, path.length());
 
-        if (procedureNumber == 0) {
-          byte[] xdrReplyBytes = createNfsNullReply(xid);
+        log.info("NFS Request - XID: 0x{}, Program: {}, Version: {}, Procedure: {}", 
+        Integer.toHexString(xid), programNumber, programVersion, procedureNumber);
 
-          log.info("Raw response buffer (" + buffer.length() + " bytes):");
-          // 简单的十六进制打印
-          for (int i = 0; i < xdrReplyBytes.length; i++) {
-            System.out.printf("%02X ", xdrReplyBytes[i]);
-            if ((i + 1) % 16 == 0 || i == xdrReplyBytes.length - 1) {
-              System.out.println();
-            }
-          }
-          log.info("---- End of Raw response Buffer ----");
+        // 验证程序号和版本号
+        if (programNumber != MOUNT_PROGRAM || programVersion != MOUNT_VERSION) {
+          log.error("Invalid program number or version: program={}, version={}", programNumber, programVersion);
+          return;
+        }
 
-          socket.write(Buffer.buffer(xdrReplyBytes));
-        } else if (procedureNumber == 1) {
           byte[] xdrReplyBytes = null;
           try {
-            xdrReplyBytes = createNfsMNTReply(xid);
-          } catch (DecoderException e) {
-            throw new RuntimeException(e);
+          switch (procedureNumber) {
+            case MOUNTPROC_NULL:
+              xdrReplyBytes = createNfsNullReply(xid);
+              break;
+            case MOUNTPROC_MNT:
+              xdrReplyBytes = createNfsMNTReply(xid, path);
+              break;
+            case MOUNTPROC_DUMP:
+              xdrReplyBytes = createNfsDumpReply(xid);
+              break;
+            case MOUNTPROC_UMNT:
+              xdrReplyBytes = createNfsUMNTReply(xid);
+              break;
+            case MOUNTPROC_UMNTALL:
+              xdrReplyBytes = createNfsUMNTALLReply(xid);
+              break;
+            case MOUNTPROC_EXPORT:
+              xdrReplyBytes = createNfsExportReply(xid);
+              break;
+            default:
+              log.error("Unsupported procedure number: {}", procedureNumber);
+              return;
           }
 
-          log.info("Raw response buffer (" + buffer.length() + " bytes):");
+          if (xdrReplyBytes != null) {
+            log.info("Raw response buffer (" + xdrReplyBytes.length + " bytes):");
           // 简单的十六进制打印
           for (int i = 0; i < xdrReplyBytes.length; i++) {
             System.out.printf("%02X ", xdrReplyBytes[i]);
@@ -113,6 +127,9 @@ public class MountVerticle extends AbstractVerticle {
           log.info("---- End of Raw response Buffer ----");
 
           socket.write(Buffer.buffer(xdrReplyBytes));
+          }
+        } catch (Exception e) {
+          log.error("Error processing MOUNT request", e);
         }
 
         // 如果客户端发送 "quit"，则关闭连接
@@ -170,6 +187,30 @@ public class MountVerticle extends AbstractVerticle {
   private static final int MOUNT_STATUS_OK = 0;
   private static final int MOUNT_FLAVORS = 1;
   private static final int MOUNT_FLAVOR_AUTH_UNIX = 1;
+  
+  // MOUNT Program Constants
+  private static final int MOUNT_PROGRAM = 100005;
+  private static final int MOUNT_VERSION = 3;
+  
+  // MOUNT Procedure Numbers
+  private static final int MOUNTPROC_NULL = 0;
+  private static final int MOUNTPROC_MNT = 1;
+  private static final int MOUNTPROC_DUMP = 2;
+  private static final int MOUNTPROC_UMNT = 3;
+  private static final int MOUNTPROC_UMNTALL = 4;
+  private static final int MOUNTPROC_EXPORT = 5;
+  
+  // MOUNT Status Codes
+  private static final int MNT_OK = 0;
+  private static final int MNT_ERR_PERM = 1;
+  private static final int MNT_ERR_NOENT = 2;
+  private static final int MNT_ERR_IO = 5;
+  private static final int MNT_ERR_ACCES = 13;
+  private static final int MNT_ERR_NOTDIR = 20;
+  private static final int MNT_ERR_INVAL = 22;
+  private static final int MNT_ERR_NAMETOOLONG = 63;
+  private static final int MNT_ERR_NOTSUPP = 10004;
+  private static final int MNT_ERR_SERVERFAULT = 10006;
 
   public static byte[] createNfsNullReply(int requestXid) {
     // --- Calculate RPC Message Body Length ---
@@ -227,7 +268,7 @@ public class MountVerticle extends AbstractVerticle {
     return fullResponseBuffer.array();
   }
 
-  public static byte[] createNfsMNTReply(int requestXid) throws DecoderException {
+  public static byte[] createNfsMNTReply(int requestXid, String path) throws DecoderException {
     // --- Calculate RPC Message Body Length ---
     // XID (4 bytes)
     // Message Type (4 bytes)
@@ -242,13 +283,11 @@ public class MountVerticle extends AbstractVerticle {
     //      FileHandleData
     //    Flavors
     //    Flavor
-    // Total = 6 * 4 = 24 bytes
     final int rpcMessageBodyLength = 24;
 
     // --- Create ByteBuffer for the RPC Message Body ---
-    // We will fill this first, then prepend the record mark.
     ByteBuffer rpcBodyBuffer = ByteBuffer.allocate(rpcMessageBodyLength);
-    rpcBodyBuffer.order(ByteOrder.BIG_ENDIAN); // XDR is Big Endian
+    rpcBodyBuffer.order(ByteOrder.BIG_ENDIAN);
 
     // 1. XID (Transaction Identifier) - from request
     rpcBodyBuffer.putInt(requestXid);
@@ -264,44 +303,147 @@ public class MountVerticle extends AbstractVerticle {
     //        3.2.1. Verifier (verf - opaque_auth structure)
     rpcBodyBuffer.putInt(VERF_FLAVOR_AUTH_NONE); // Flavor
     rpcBodyBuffer.putInt(VERF_LENGTH_ZERO);      // Length of body (0 for AUTH_NONE)
-    // Body is empty
 
     //        3.2.2. Acceptance Status (stat of union switch (accept_stat stat))
     rpcBodyBuffer.putInt(ACCEPT_STAT_SUCCESS);
 
-    //        3.2.3. Results (for NFSPROC3_NULL, this is void, so no data)
+    // Mount Service Reply
     int rpcMountLength = 4 + 4 + 28 + 4 + 4;
     ByteBuffer rpcMountBuffer = ByteBuffer.allocate(rpcMountLength);
-    rpcBodyBuffer.order(ByteOrder.BIG_ENDIAN); // XDR is Big Endian
+    rpcMountBuffer.order(ByteOrder.BIG_ENDIAN);
 
-    rpcMountBuffer.putInt(MOUNT_STATUS_OK);
-    rpcMountBuffer.putInt(0x0000001C);
-    String dataLiteral = "0100070002000002000000003e3e7dae34c9471896e6218574c98110";
-    rpcMountBuffer.put(NetTool.hexStringToByteArray(dataLiteral));
-    rpcMountBuffer.putInt(MOUNT_FLAVORS);
-    rpcMountBuffer.putInt(MOUNT_FLAVOR_AUTH_UNIX);
+    // Check if path exists and is accessible
+    int mountStatus = MNT_OK;
+    // TODO: Add actual path validation logic here
+    if (!path.startsWith("/")) {
+      mountStatus = MNT_ERR_INVAL;
+    }
+
+    rpcMountBuffer.putInt(mountStatus);
+    if (mountStatus == MNT_OK) {
+      rpcMountBuffer.putInt(0x0000001C); // File handle length
+      
+      // Create a file handle using the provided format
+      // Format from the provided hex dump:
+      // 01 00 07 00 02 00 00 02 00 00 00 00 3e 3e 7d ae 34 c9 47 18 96 e6 21 85 74 c9 81 10
+      String dataLiteral = "0100070002000002000000003e3e7dae34c9471896e6218574c98110";
+      rpcMountBuffer.put(NetTool.hexStringToByteArray(dataLiteral));
+      
+      rpcMountBuffer.putInt(MOUNT_FLAVORS);
+      rpcMountBuffer.putInt(MOUNT_FLAVOR_AUTH_UNIX);
+    }
 
     // --- Construct Record Marking ---
-    // Highest bit set (0x80000000) ORed with the length of the RPC message body.
-    // In Java, an int is 32-bit.
-    int recordMarkValue = 0x80000000 + rpcMessageBodyLength + rpcMountLength;
-
-    log.info("total RPC length: " + (rpcMountLength + rpcMessageBodyLength));
+    int recordMarkValue = 0x80000000 | (rpcMessageBodyLength + rpcMountLength);
 
     // --- Create ByteBuffer for the Full XDR Response ---
-    // Record Mark (4 bytes) + RPC Message Body (rpcMessageBodyLength bytes)
     ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcMessageBodyLength + rpcMountLength);
     fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
 
     // Put the record mark
     fullResponseBuffer.putInt(recordMarkValue);
-    // Put the RPC message body (which is already in rpcBodyBuffer)
-    fullResponseBuffer.put(rpcBodyBuffer.array()); // .array() gets the underlying byte array
+    // Put the RPC message body
+    fullResponseBuffer.put(rpcBodyBuffer.array());
     fullResponseBuffer.put(rpcMountBuffer.array());
 
-    // Return the complete byte array
     return fullResponseBuffer.array();
   }
+
+  public static byte[] createNfsDumpReply(int requestXid) {
+    final int rpcMessageBodyLength = 24;
+    ByteBuffer rpcBodyBuffer = ByteBuffer.allocate(rpcMessageBodyLength);
+    rpcBodyBuffer.order(ByteOrder.BIG_ENDIAN);
+
+    // Standard RPC reply header
+    rpcBodyBuffer.putInt(requestXid);
+    rpcBodyBuffer.putInt(MSG_TYPE_REPLY);
+    rpcBodyBuffer.putInt(REPLY_STAT_MSG_ACCEPTED);
+    rpcBodyBuffer.putInt(VERF_FLAVOR_AUTH_NONE);
+    rpcBodyBuffer.putInt(VERF_LENGTH_ZERO);
+    rpcBodyBuffer.putInt(ACCEPT_STAT_SUCCESS);
+
+    // DUMP reply is just an empty list
+    int rpcDumpLength = 4; // Just the length of the list (0)
+    ByteBuffer rpcDumpBuffer = ByteBuffer.allocate(rpcDumpLength);
+    rpcDumpBuffer.order(ByteOrder.BIG_ENDIAN);
+    rpcDumpBuffer.putInt(0); // Empty list
+
+    // Record marking
+    int recordMarkValue = 0x80000000 | (rpcMessageBodyLength + rpcDumpLength);
+
+    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcMessageBodyLength + rpcDumpLength);
+    fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
+    fullResponseBuffer.putInt(recordMarkValue);
+    fullResponseBuffer.put(rpcBodyBuffer.array());
+    fullResponseBuffer.put(rpcDumpBuffer.array());
+
+    return fullResponseBuffer.array();
+  }
+
+  public static byte[] createNfsUMNTReply(int requestXid) {
+    final int rpcMessageBodyLength = 24;
+    ByteBuffer rpcBodyBuffer = ByteBuffer.allocate(rpcMessageBodyLength);
+    rpcBodyBuffer.order(ByteOrder.BIG_ENDIAN);
+
+    // Standard RPC reply header
+    rpcBodyBuffer.putInt(requestXid);
+    rpcBodyBuffer.putInt(MSG_TYPE_REPLY);
+    rpcBodyBuffer.putInt(REPLY_STAT_MSG_ACCEPTED);
+    rpcBodyBuffer.putInt(VERF_FLAVOR_AUTH_NONE);
+    rpcBodyBuffer.putInt(VERF_LENGTH_ZERO);
+    rpcBodyBuffer.putInt(ACCEPT_STAT_SUCCESS);
+
+    // UMNT reply is void
+    int recordMarkValue = 0x80000000 | rpcMessageBodyLength;
+
+    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcMessageBodyLength);
+    fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
+    fullResponseBuffer.putInt(recordMarkValue);
+    fullResponseBuffer.put(rpcBodyBuffer.array());
+
+    return fullResponseBuffer.array();
+  }
+
+  public static byte[] createNfsUMNTALLReply(int requestXid) {
+    // UMNTALL reply is identical to UMNT reply
+    return createNfsUMNTReply(requestXid);
+  }
+
+  public static byte[] createNfsExportReply(int requestXid) {
+    final int rpcMessageBodyLength = 24;
+    ByteBuffer rpcBodyBuffer = ByteBuffer.allocate(rpcMessageBodyLength);
+    rpcBodyBuffer.order(ByteOrder.BIG_ENDIAN);
+
+    // Standard RPC reply header
+    rpcBodyBuffer.putInt(requestXid);
+    rpcBodyBuffer.putInt(MSG_TYPE_REPLY);
+    rpcBodyBuffer.putInt(REPLY_STAT_MSG_ACCEPTED);
+    rpcBodyBuffer.putInt(VERF_FLAVOR_AUTH_NONE);
+    rpcBodyBuffer.putInt(VERF_LENGTH_ZERO);
+    rpcBodyBuffer.putInt(ACCEPT_STAT_SUCCESS);
+
+    // Export list with one entry
+    int rpcExportLength = 4 + 4 + 4 + 4 + 4; // List length + path length + path + groups length
+    ByteBuffer rpcExportBuffer = ByteBuffer.allocate(rpcExportLength);
+    rpcExportBuffer.order(ByteOrder.BIG_ENDIAN);
+
+    rpcExportBuffer.putInt(1); // One export
+    rpcExportBuffer.putInt(4); // Path length
+    rpcExportBuffer.putInt(0); // No groups
+    rpcExportBuffer.putInt(0); // No groups length
+
+    // Record marking
+    int recordMarkValue = 0x80000000 | (rpcMessageBodyLength + rpcExportLength);
+
+    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcMessageBodyLength + rpcExportLength);
+    fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
+    fullResponseBuffer.putInt(recordMarkValue);
+    fullResponseBuffer.put(rpcBodyBuffer.array());
+    fullResponseBuffer.put(rpcExportBuffer.array());
+
+    return fullResponseBuffer.array();
+  }
+
   // Helper method to print byte array as hex string for verification
   public static String bytesToHex(byte[] bytes) {
     StringBuilder sb = new StringBuilder();
