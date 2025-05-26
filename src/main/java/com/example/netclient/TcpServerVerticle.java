@@ -628,7 +628,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     rpcBodyBuffer.putInt(ACCEPT_STAT_SUCCESS);
 
     // Calculate size for attributes
-    int attrSize = 4 + // present flag
+    int attrSize =
         4 + // type
         4 + // mode
         4 + // nlink
@@ -663,8 +663,10 @@ public class TcpServerVerticle extends AbstractVerticle {
         fileHandleLength + // object handle data
         4 + // obj_attributes present flag
         attrSize + // obj_attributes
-        4 + // dir_attributes present flag
-        0;  // dir_attributes
+        4;
+        // 不展示文件所在的目录，所以不加上目录的大小
+        // + // dir_attributes present flag
+        // attrSize;  // dir_attributes
 
     ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
     rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
@@ -698,8 +700,8 @@ public class TcpServerVerticle extends AbstractVerticle {
     rpcNfsBuffer.putInt(1);  // nlink
     rpcNfsBuffer.putInt(0);  // uid (root)
     rpcNfsBuffer.putInt(0);  // gid (root)
-    rpcNfsBuffer.putLong(0);  // size
-    rpcNfsBuffer.putLong(0);  // used
+    rpcNfsBuffer.putLong(4096);  // size
+    rpcNfsBuffer.putLong(4096);  // used
     rpcNfsBuffer.putLong(0);  // rdev
     rpcNfsBuffer.putInt(0x08c60040);  // fsid (major)
     rpcNfsBuffer.putInt(0x2b5cd8a8);  // fsid (minor)
@@ -709,7 +711,7 @@ public class TcpServerVerticle extends AbstractVerticle {
       fileIdMap.put(name, fileId);
     }
 
-    rpcNfsBuffer.putLong(0x0000000002000002L);  // fileid (unique for each file)
+    rpcNfsBuffer.putLong(fileIdMap.get(name));  // fileid (unique for each file)
 
     // Current time in seconds and nanoseconds
     long currentTimeMillis = System.currentTimeMillis();
@@ -2412,7 +2414,7 @@ public class TcpServerVerticle extends AbstractVerticle {
             rpcNfsBuffer.putInt(1);  // type (NF3REG = 1, regular file)
             rpcNfsBuffer.putInt(0x000001A4); // mode (rw-r--r--)
         }
-        rpcNfsBuffer.putInt(2);  // nlink
+        rpcNfsBuffer.putInt(1);  // nlink
         rpcNfsBuffer.putInt(0);  // uid (root)
         rpcNfsBuffer.putInt(0);  // gid (root)
         rpcNfsBuffer.putLong(4096);  // size
