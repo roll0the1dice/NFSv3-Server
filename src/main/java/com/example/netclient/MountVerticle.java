@@ -1,5 +1,8 @@
 package com.example.netclient;
 
+import com.example.netclient.enums.RpcReplyMessage;
+import com.example.netclient.enums.MountProcedure;
+import com.example.netclient.enums.MountStatus;
 import com.example.netclient.enums.RpcParseState;
 import com.example.netclient.utils.NetTool;
 import io.vertx.core.*;
@@ -20,6 +23,12 @@ import java.util.List;
 
 @Slf4j
 public class MountVerticle extends AbstractVerticle {
+  private static final int MOUNT_PROGRAM = 100005;
+  private static final int MOUNT_VERSION = 3;
+  private static final int MOUNT_STATUS_OK = 0;
+  private static final int MOUNT_FLAVORS = 1;
+  private static final int MOUNT_FLAVOR_AUTH_UNIX = 1;
+
   private static final int PORT = 23333; // 服务器监听的端口
   private static final String HOST = "0.0.0.0"; // 监听所有网络接口
 
@@ -157,15 +166,17 @@ public class MountVerticle extends AbstractVerticle {
     log.info("NFS Request - XID: 0x{}, Program: {}, Version: {}, Procedure: {}",
     Integer.toHexString(xid), programNumber, programVersion, procedureNumber);
 
-    // 验证程序号和版本号
+    /* 验证程序号和版本号 */
     if (programNumber != MOUNT_PROGRAM || programVersion != MOUNT_VERSION) {
       log.error("Invalid program number or version: program={}, version={}", programNumber, programVersion);
       return;
     }
 
+    MountProcedure procedureNumberEnum = MountProcedure.fromCode(procedureNumber);
+
     byte[] xdrReplyBytes = null;
     try {
-      switch (procedureNumber) {
+      switch (procedureNumberEnum) {
         case MOUNTPROC_NULL:
           xdrReplyBytes = createNfsNullReply(xid);
           break;
@@ -228,40 +239,6 @@ public class MountVerticle extends AbstractVerticle {
       .onFailure(err -> System.err.println("Deployment failed: " + err.getMessage()));
   }
 
-  // RPC Constants (values are in decimal for Java int literals)
-  private static final int MSG_TYPE_REPLY = 1;          // 0x00000001
-  private static final int REPLY_STAT_MSG_ACCEPTED = 0; // 0x00000000
-  private static final int VERF_FLAVOR_AUTH_NONE = 0;   // 0x00000000
-  private static final int VERF_LENGTH_ZERO = 0;        // 0x00000000
-  private static final int ACCEPT_STAT_SUCCESS = 0;     // 0x00000000
-  private static final int MOUNT_STATUS_OK = 0;
-  private static final int MOUNT_FLAVORS = 1;
-  private static final int MOUNT_FLAVOR_AUTH_UNIX = 1;
-
-  // MOUNT Program Constants
-  private static final int MOUNT_PROGRAM = 100005;
-  private static final int MOUNT_VERSION = 3;
-
-  // MOUNT Procedure Numbers
-  private static final int MOUNTPROC_NULL = 0;
-  private static final int MOUNTPROC_MNT = 1;
-  private static final int MOUNTPROC_DUMP = 2;
-  private static final int MOUNTPROC_UMNT = 3;
-  private static final int MOUNTPROC_UMNTALL = 4;
-  private static final int MOUNTPROC_EXPORT = 5;
-
-  // MOUNT Status Codes
-  private static final int MNT_OK = 0;
-  private static final int MNT_ERR_PERM = 1;
-  private static final int MNT_ERR_NOENT = 2;
-  private static final int MNT_ERR_IO = 5;
-  private static final int MNT_ERR_ACCES = 13;
-  private static final int MNT_ERR_NOTDIR = 20;
-  private static final int MNT_ERR_INVAL = 22;
-  private static final int MNT_ERR_NAMETOOLONG = 63;
-  private static final int MNT_ERR_NOTSUPP = 10004;
-  private static final int MNT_ERR_SERVERFAULT = 10006;
-
   public static byte[] createNfsNullReply(int requestXid) {
     // --- Calculate RPC Message Body Length ---
     // XID (4 bytes)
@@ -282,20 +259,20 @@ public class MountVerticle extends AbstractVerticle {
     rpcBodyBuffer.putInt(requestXid);
 
     // 2. Message Type (mtype)
-    rpcBodyBuffer.putInt(MSG_TYPE_REPLY);
+    rpcBodyBuffer.putInt(RpcReplyMessage.MSG_TYPE_REPLY.getCode());
 
     // 3. Reply Body (reply_body)
     //    3.1. Reply Status (stat of union switch (msg_type mtype))
-    rpcBodyBuffer.putInt(REPLY_STAT_MSG_ACCEPTED);
+    rpcBodyBuffer.putInt(RpcReplyMessage.REPLY_STAT_MSG_ACCEPTED.getCode());
 
     //    3.2. Accepted Reply (areply)
     //        3.2.1. Verifier (verf - opaque_auth structure)
-    rpcBodyBuffer.putInt(VERF_FLAVOR_AUTH_NONE); // Flavor
-    rpcBodyBuffer.putInt(VERF_LENGTH_ZERO);      // Length of body (0 for AUTH_NONE)
+    rpcBodyBuffer.putInt(RpcReplyMessage.VERF_FLAVOR_AUTH_NONE.getCode()); // Flavor
+    rpcBodyBuffer.putInt(RpcReplyMessage.VERF_LENGTH_ZERO.getCode());      // Length of body (0 for AUTH_NONE)
     // Body is empty
 
     //        3.2.2. Acceptance Status (stat of union switch (accept_stat stat))
-    rpcBodyBuffer.putInt(ACCEPT_STAT_SUCCESS);
+    rpcBodyBuffer.putInt(RpcReplyMessage.ACCEPT_STAT_SUCCESS.getCode());
 
     //        3.2.3. Results (for NFSPROC3_NULL, this is void, so no data)
 
@@ -343,19 +320,19 @@ public class MountVerticle extends AbstractVerticle {
     rpcBodyBuffer.putInt(requestXid);
 
     // 2. Message Type (mtype)
-    rpcBodyBuffer.putInt(MSG_TYPE_REPLY);
+    rpcBodyBuffer.putInt(RpcReplyMessage.MSG_TYPE_REPLY.getCode());
 
     // 3. Reply Body (reply_body)
     //    3.1. Reply Status (stat of union switch (msg_type mtype))
-    rpcBodyBuffer.putInt(REPLY_STAT_MSG_ACCEPTED);
+    rpcBodyBuffer.putInt(RpcReplyMessage.REPLY_STAT_MSG_ACCEPTED.getCode());
 
     //    3.2. Accepted Reply (areply)
     //        3.2.1. Verifier (verf - opaque_auth structure)
-    rpcBodyBuffer.putInt(VERF_FLAVOR_AUTH_NONE); // Flavor
-    rpcBodyBuffer.putInt(VERF_LENGTH_ZERO);      // Length of body (0 for AUTH_NONE)
+    rpcBodyBuffer.putInt(RpcReplyMessage.VERF_FLAVOR_AUTH_NONE.getCode()); // Flavor
+    rpcBodyBuffer.putInt(RpcReplyMessage.VERF_LENGTH_ZERO.getCode());      // Length of body (0 for AUTH_NONE)
 
     //        3.2.2. Acceptance Status (stat of union switch (accept_stat stat))
-    rpcBodyBuffer.putInt(ACCEPT_STAT_SUCCESS);
+    rpcBodyBuffer.putInt(RpcReplyMessage.ACCEPT_STAT_SUCCESS.getCode());
 
     // Mount Service Reply
     int rpcMountLength = 4 + 4 + 28 + 4 + 4;
@@ -363,15 +340,15 @@ public class MountVerticle extends AbstractVerticle {
     rpcMountBuffer.order(ByteOrder.BIG_ENDIAN);
 
     // Check if path exists and is accessible
-    int mountStatus = MNT_OK;
+    int mountStatus = MountStatus.MNT_OK.getCode();
 
     // actual path validation logic here
     if (!path.startsWith("/")) {
-      mountStatus = MNT_ERR_INVAL;
+      mountStatus = MountStatus.MNT_ERR_INVAL.getCode();
     }
 
     rpcMountBuffer.putInt(mountStatus);
-    if (mountStatus == MNT_OK) {
+    if (mountStatus == MountStatus.MNT_OK.getCode()) {
       rpcMountBuffer.putInt(0x0000001C); // File handle length
       // Create a file handle using the provided format
       // Format from the provided hex dump:
@@ -401,16 +378,16 @@ public class MountVerticle extends AbstractVerticle {
 
   public static byte[] createNfsDumpReply(int requestXid) {
     final int rpcMessageBodyLength = 24;
-    ByteBuffer rpcBodyBuffer = ByteBuffer.allocate(rpcMessageBodyLength);
-    rpcBodyBuffer.order(ByteOrder.BIG_ENDIAN);
+    ByteBuffer rpcReplyHeaderBuffer = ByteBuffer.allocate(rpcMessageBodyLength);
+    rpcReplyHeaderBuffer.order(ByteOrder.BIG_ENDIAN);
 
     // Standard RPC reply header
-    rpcBodyBuffer.putInt(requestXid);
-    rpcBodyBuffer.putInt(MSG_TYPE_REPLY);
-    rpcBodyBuffer.putInt(REPLY_STAT_MSG_ACCEPTED);
-    rpcBodyBuffer.putInt(VERF_FLAVOR_AUTH_NONE);
-    rpcBodyBuffer.putInt(VERF_LENGTH_ZERO);
-    rpcBodyBuffer.putInt(ACCEPT_STAT_SUCCESS);
+    rpcReplyHeaderBuffer.putInt(requestXid);
+    rpcReplyHeaderBuffer.putInt(RpcReplyMessage.MSG_TYPE_REPLY.getCode());
+    rpcReplyHeaderBuffer.putInt(RpcReplyMessage.REPLY_STAT_MSG_ACCEPTED.getCode());
+    rpcReplyHeaderBuffer.putInt(RpcReplyMessage.VERF_FLAVOR_AUTH_NONE.getCode());
+    rpcReplyHeaderBuffer.putInt(RpcReplyMessage.VERF_LENGTH_ZERO.getCode());
+    rpcReplyHeaderBuffer.putInt(RpcReplyMessage.ACCEPT_STAT_SUCCESS.getCode());
 
     // DUMP reply is just an empty list
     int rpcDumpLength = 4; // Just the length of the list (0)
@@ -424,7 +401,7 @@ public class MountVerticle extends AbstractVerticle {
     ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcMessageBodyLength + rpcDumpLength);
     fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
     fullResponseBuffer.putInt(recordMarkValue);
-    fullResponseBuffer.put(rpcBodyBuffer.array());
+    fullResponseBuffer.put(rpcReplyHeaderBuffer.array());
     fullResponseBuffer.put(rpcDumpBuffer.array());
 
     return fullResponseBuffer.array();
@@ -437,11 +414,11 @@ public class MountVerticle extends AbstractVerticle {
 
     // Standard RPC reply header
     rpcBodyBuffer.putInt(requestXid);
-    rpcBodyBuffer.putInt(MSG_TYPE_REPLY);
-    rpcBodyBuffer.putInt(REPLY_STAT_MSG_ACCEPTED);
-    rpcBodyBuffer.putInt(VERF_FLAVOR_AUTH_NONE);
-    rpcBodyBuffer.putInt(VERF_LENGTH_ZERO);
-    rpcBodyBuffer.putInt(ACCEPT_STAT_SUCCESS);
+    rpcBodyBuffer.putInt(RpcReplyMessage.MSG_TYPE_REPLY.getCode());
+    rpcBodyBuffer.putInt(RpcReplyMessage.REPLY_STAT_MSG_ACCEPTED.getCode());
+    rpcBodyBuffer.putInt(RpcReplyMessage.VERF_FLAVOR_AUTH_NONE.getCode());
+    rpcBodyBuffer.putInt(RpcReplyMessage.VERF_LENGTH_ZERO.getCode());
+    rpcBodyBuffer.putInt(RpcReplyMessage.ACCEPT_STAT_SUCCESS.getCode());
 
     // UMNT reply is void
     int recordMarkValue = 0x80000000 | rpcMessageBodyLength;
@@ -466,11 +443,11 @@ public class MountVerticle extends AbstractVerticle {
 
     // Standard RPC reply header
     rpcBodyBuffer.putInt(requestXid);
-    rpcBodyBuffer.putInt(MSG_TYPE_REPLY);
-    rpcBodyBuffer.putInt(REPLY_STAT_MSG_ACCEPTED);
-    rpcBodyBuffer.putInt(VERF_FLAVOR_AUTH_NONE);
-    rpcBodyBuffer.putInt(VERF_LENGTH_ZERO);
-    rpcBodyBuffer.putInt(ACCEPT_STAT_SUCCESS);
+    rpcBodyBuffer.putInt(RpcReplyMessage.MSG_TYPE_REPLY.getCode());
+    rpcBodyBuffer.putInt(RpcReplyMessage.REPLY_STAT_MSG_ACCEPTED.getCode());
+    rpcBodyBuffer.putInt(RpcReplyMessage.VERF_FLAVOR_AUTH_NONE.getCode());
+    rpcBodyBuffer.putInt(RpcReplyMessage.VERF_LENGTH_ZERO.getCode());
+    rpcBodyBuffer.putInt(RpcReplyMessage.ACCEPT_STAT_SUCCESS.getCode());
 
     // Export list with one entry
     int rpcExportLength = 4 + 4 + 4 + 4 + 4; // List length + path length + path + groups length
