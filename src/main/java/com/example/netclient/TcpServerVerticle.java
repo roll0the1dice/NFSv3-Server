@@ -14,6 +14,7 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -363,6 +364,40 @@ public class TcpServerVerticle extends AbstractVerticle {
   private static final int NFSPROC_FSINFO = 19;
   private static final int NFSPROC_PATHCONF = 20;
   private static final int NFSPROC_COMMIT = 21;
+
+
+  public static final int NFS3_OK = 0;
+  public static final int NFS3ERR_PERM = 1;
+  public static final int NFS3ERR_NOENT = 2;
+  public static final int NFS3ERR_IO = 5;
+  public static final int NFS3ERR_NXIO = 6;
+  public static final int NFS3ERR_ACCES = 13;
+  public static final int NFS3ERR_EXIST = 17;
+  public static final int NFS3ERR_XDEV = 18;
+  public static final int NFS3ERR_NODEV = 19;
+  public static final int NFS3ERR_NOTDIR = 20;
+  public static final int NFS3ERR_ISDIR = 21;
+  public static final int NFS3ERR_INVAL = 22;
+  public static final int NFS3ERR_FBIG = 27;
+  public static final int NFS3ERR_NOSPC = 28;
+  public static final int NFS3ERR_ROFS  = 30;
+  public static final int NFS3ERR_MLINK = 31;
+  public static final int NFS3ERR_NAMETOOLONG = 63;
+  public static final int NFS3ERR_NOTEMPTY = 66;
+  public static final int NFS3ERR_DQUOT = 69;
+  public static final int NFS3ERR_STALE = 70;
+  public static final int NFS3ERR_REMOTE = 71;
+  public static final int NFS3ERR_BADHANDLE = 10001;
+  public static final int NFS3ERR_NOT_SYNC = 10002;
+  public static final int NFS3ERR_BAD_COOKIE = 10003;
+  public static final int NFS3ERR_NOTSUPP = 10004;
+  public static final int NFS3ERR_TOOSMALL = 10005;
+  public static final int NFS3ERR_SERVERFAULT = 10006;
+  public static final int NFS3ERR_BADTYPE = 10007;
+  public static final int NFS3ERR_JUKEBOX = 10008;
+
+
+
   private static Map<String, byte[]> fileHandlerMap = new ConcurrentHashMap<>();
   private static Map<String, Long> fileIdMap = new ConcurrentHashMap<>();
 
@@ -658,7 +693,7 @@ public class TcpServerVerticle extends AbstractVerticle {
 
     log.info("Generated file handle for '{}': {}", name, bytesToHex(fileHandle));
 
-    int rpcNfsLength = 4 + // status
+    int rpcNfsOKLength = 4 + // status
         4 + // object handle length
         fileHandleLength + // object handle data
         4 + // obj_attributes present flag
@@ -667,107 +702,134 @@ public class TcpServerVerticle extends AbstractVerticle {
         // 不展示文件所在的目录，所以不加上目录的大小
         // + // dir_attributes present flag
         // attrSize;  // dir_attributes
+    int rpcNfsErrorLength = 4 + // status
+        4 + // present
+        attrSize;
+
+    boolean isSuccess = true;
+
+    int rpcNfsLength = isSuccess ? rpcNfsOKLength : rpcNfsErrorLength;
 
     ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
     rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
 
-    // Status (NFS_OK = 0)
-    rpcNfsBuffer.putInt(0);
-
-    // Object handle
-    rpcNfsBuffer.putInt(fileHandleLength); // handle length
-    rpcNfsBuffer.put(fileHandle); // handle data
-
-    // Object attributes present flag (1 = true)
-    rpcNfsBuffer.putInt(1);
-
-    // Object attributes
-    // Determine file type based on name
-    int fileType;
-    if (name.endsWith("/") || name.equals("docs") || name.equals("src") ||
-        name.equals("bin") || name.equals("lib") || name.equals("include") ||
-        name.equals("share") || name.equals("etc") || name.equals("var") ||
-        name.equals("tmp") || name.equals("usr") || name.equals("home") ||
-        name.equals("root") || name.equals("boot") || name.equals("dev") ||
-        name.equals("proc") || name.equals("sys") || name.equals("mnt")) {
-        fileType = 2;  // NF3DIR = 2, directory
-    } else {
-        fileType = 1;  // NF3REG = 1, regular file
-    }
-
-    rpcNfsBuffer.putInt(fileType);  // type
-    rpcNfsBuffer.putInt(fileType == 2 ? 0x000001ED : 0x000001A4); // mode (rwxr-xr-x for dir, rw-r--r-- for file)
-    rpcNfsBuffer.putInt(1);  // nlink
-    rpcNfsBuffer.putInt(0);  // uid (root)
-    rpcNfsBuffer.putInt(0);  // gid (root)
-    rpcNfsBuffer.putLong(4096);  // size
-    rpcNfsBuffer.putLong(4096);  // used
-    rpcNfsBuffer.putLong(0);  // rdev
-    rpcNfsBuffer.putInt(0x08c60040);  // fsid (major)
-    rpcNfsBuffer.putInt(0x2b5cd8a8);  // fsid (minor)
-
-    if(!fileIdMap.containsKey(name)) {
-      long fileId = generateFileId(name);
-      fileIdMap.put(name, fileId);
-    }
-
-    rpcNfsBuffer.putLong(fileIdMap.get(name));  // fileid (unique for each file)
-
     // Current time in seconds and nanoseconds
     long currentTimeMillis = System.currentTimeMillis();
-    int seconds = (int)(currentTimeMillis / 1000);
-    int nseconds = (int)((currentTimeMillis % 1000) * 1_000_000);
+    int seconds = (int) (currentTimeMillis / 1000);
+    int nseconds = (int) ((currentTimeMillis % 1000) * 1_000_000);
 
-    // atime
-    rpcNfsBuffer.putInt(seconds);  // atime (seconds)
-    rpcNfsBuffer.putInt(nseconds);  // atime (nseconds)
+    if (isSuccess) {
+      // Status (NFS_OK = 0)
+      rpcNfsBuffer.putInt(0);
 
-    // mtime
-    rpcNfsBuffer.putInt(seconds);  // mtime (seconds)
-    rpcNfsBuffer.putInt(nseconds);  // mtime (nseconds)
+      // Object handle
+      rpcNfsBuffer.putInt(fileHandleLength); // handle length
+      rpcNfsBuffer.put(fileHandle); // handle data
 
-    // ctime
-    rpcNfsBuffer.putInt(seconds);  // ctime (seconds)
-    rpcNfsBuffer.putInt(nseconds);  // ctime (nseconds)
+      // Object attributes present flag (1 = true)
+      rpcNfsBuffer.putInt(1);
 
-//    // Directory attributes present flag (1 = true)
-//    rpcNfsBuffer.putInt(1);
-//
-//    // Directory attributes
-//    rpcNfsBuffer.putInt(2);  // type (NF3DIR = 2, directory)
-//    rpcNfsBuffer.putInt(0x000001ED); // mode (rwxr-xr-x)
-//    rpcNfsBuffer.putInt(1);  // nlink
-//    rpcNfsBuffer.putInt(0);  // uid (root)
-//    rpcNfsBuffer.putInt(0);  // gid (root)
-//    rpcNfsBuffer.putLong(4096);  // size (4KB)
-//    rpcNfsBuffer.putLong(4096);  // used (4KB)
-//    rpcNfsBuffer.putLong(0);  // rdev (0 for directories)
-//    rpcNfsBuffer.putInt(0x08c60040);  // fsid (major)
-//    rpcNfsBuffer.putInt(0x2b5cd8a8);  // fsid (minor)
-//    rpcNfsBuffer.putLong(0x0000000002000002L);  // fileid
-//
-//    // atime
-//    rpcNfsBuffer.putInt(seconds);  // atime (seconds)
-//    rpcNfsBuffer.putInt(nseconds);  // atime (nseconds)
-//
-//    // mtime
-//    rpcNfsBuffer.putInt(seconds);  // mtime (seconds)
-//    rpcNfsBuffer.putInt(nseconds);  // mtime (nseconds)
-//
-//    // ctime
-//    rpcNfsBuffer.putInt(seconds);  // ctime (seconds)
-//    rpcNfsBuffer.putInt(nseconds);  // ctime (nseconds)
+      // Object attributes
+      // Determine file type based on name
+      int fileType;
+      fileType = getFileType(name);
 
-    // Record marking
-    int recordMarkValue = 0x80000000 | (rpcMessageBodyLength + rpcNfsLength);
+      rpcNfsBuffer.putInt(fileType);  // type
+      rpcNfsBuffer.putInt(fileType == 2 ? 0x000001ED : 0x000001ED); // mode (rwxr-xr-x for dir, rw-r--r-- for file)
+      rpcNfsBuffer.putInt(1);  // nlink
+      rpcNfsBuffer.putInt(0);  // uid (root)
+      rpcNfsBuffer.putInt(0);  // gid (root)
+      rpcNfsBuffer.putLong(4096);  // size
+      rpcNfsBuffer.putLong(4096);  // used
+      rpcNfsBuffer.putLong(0);  // rdev
+      rpcNfsBuffer.putInt(0x08c60040);  // fsid (major)
+      rpcNfsBuffer.putInt(0x2b5cd8a8);  // fsid (minor)
 
-    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcMessageBodyLength + rpcNfsLength);
-    fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
-    fullResponseBuffer.putInt(recordMarkValue);
-    fullResponseBuffer.put(rpcBodyBuffer.array());
-    fullResponseBuffer.put(rpcNfsBuffer.array());
+//    if(!fileIdMap.containsKey(name)) {
+//      long fileId = generateFileId(name);
+//      fileIdMap.put(name, fileId);
+//    }
 
-    return fullResponseBuffer.array();
+      //rpcNfsBuffer.putLong(fileIdMap.get(name));  // fileid (unique for each file)
+
+      // lookup查找到的fileid的值一定要和acess返回的值一样
+      // 要不然会有非常奇怪的错误
+      // e.g.
+      // $ cat /mnt/mynfs/test.txt
+      // cat: /mnt/mynfs/test.txt: Stale file handle
+      rpcNfsBuffer.putLong(0x0000000002000002L);
+
+      // atime
+      rpcNfsBuffer.putInt(seconds);  // atime (seconds)
+      rpcNfsBuffer.putInt(nseconds);  // atime (nseconds)
+
+      // mtime
+      rpcNfsBuffer.putInt(seconds);  // mtime (seconds)
+      rpcNfsBuffer.putInt(nseconds);  // mtime (nseconds)
+
+      // ctime
+      rpcNfsBuffer.putInt(seconds);  // ctime (seconds)
+      rpcNfsBuffer.putInt(nseconds);  // ctime (nseconds)
+    }
+    else {
+      // 状态为 Error 的 RPC 报文的长度
+      // Status
+      rpcNfsBuffer.putInt(NFS3ERR_NOENT);
+
+      // Directory attributes present flag (1 = true)
+      rpcNfsBuffer.putInt(1);
+
+      // Directory attributes
+      rpcNfsBuffer.putInt(2);  // type (NF3DIR = 2, directory)
+      rpcNfsBuffer.putInt(0x000001ED); // mode (rwxr-xr-x)
+      rpcNfsBuffer.putInt(1);  // nlink
+      rpcNfsBuffer.putInt(0);  // uid (root)
+      rpcNfsBuffer.putInt(0);  // gid (root)
+      rpcNfsBuffer.putLong(4096);  // size (4KB)
+      rpcNfsBuffer.putLong(4096);  // used (4KB)
+      rpcNfsBuffer.putLong(0);  // rdev (0 for directories)
+      rpcNfsBuffer.putInt(0x08c60040);  // fsid (major)
+      rpcNfsBuffer.putInt(0x2b5cd8a8);  // fsid (minor)
+      rpcNfsBuffer.putLong(0x0000000002000002L);  // fileid
+
+      // atime
+      rpcNfsBuffer.putInt(seconds);  // atime (seconds)
+      rpcNfsBuffer.putInt(nseconds);  // atime (nseconds)
+
+      // mtime
+      rpcNfsBuffer.putInt(seconds);  // mtime (seconds)
+      rpcNfsBuffer.putInt(nseconds);  // mtime (nseconds)
+
+      // ctime
+      rpcNfsBuffer.putInt(seconds);  // ctime (seconds)
+      rpcNfsBuffer.putInt(nseconds);  // ctime (nseconds)
+    }
+
+      // Record marking
+      int recordMarkValue = 0x80000000 | (rpcMessageBodyLength + rpcNfsLength);
+
+      ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcMessageBodyLength + rpcNfsLength);
+      fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
+      fullResponseBuffer.putInt(recordMarkValue);
+      fullResponseBuffer.put(rpcBodyBuffer.array());
+      fullResponseBuffer.put(rpcNfsBuffer.array());
+
+      return fullResponseBuffer.array();
+  }
+
+  private static int getFileType(String name) {
+    int fileType;
+    if (name.endsWith("/") || name.equals("docs") || name.equals("src") ||
+      name.equals("bin") || name.equals("lib") || name.equals("include") ||
+      name.equals("share") || name.equals("etc") || name.equals("var") ||
+      name.equals("tmp") || name.equals("usr") || name.equals("home") ||
+      name.equals("root") || name.equals("boot") || name.equals("dev") ||
+      name.equals("proc") || name.equals("sys") || name.equals("mnt")) {
+      fileType = 2;  // NF3DIR = 2, directory
+    } else {
+      fileType = 1;  // NF3REG = 1, regular file
+    }
+    return fileType;
   }
 
   // Helper method to generate a unique file handle based on the file name
@@ -833,36 +895,66 @@ public class TcpServerVerticle extends AbstractVerticle {
     rpcBodyBuffer.putInt(VERF_LENGTH_ZERO);
     rpcBodyBuffer.putInt(ACCEPT_STAT_SUCCESS);
 
+    byte[] payload = "hello,world\n".getBytes(StandardCharsets.UTF_8);
+    int dataLength = payload.length;
+
+    int fattrSize = 4 + // type
+        4 + // mode
+        4 + // nlink
+        4 + // uid
+        4 + // gid
+        8 + // size
+        8 + // used
+        8 + // rdev
+        4 + // fsid (major)
+        4 + // fsid (minor)
+        8 + // fileid
+        4 + // atime (seconds)
+        4 + // atime (nseconds)
+        4 + // mtime (seconds)
+        4 + // mtime (nseconds)
+        4 + // ctime (seconds)
+        4;  // ctime (nseconds)
+
     // NFS READ reply
-    int rpcNfsLength = 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4;
+    int rpcNfsLength = 4 + // NFS3_OK
+      4 + // post_op_attr present flag
+      fattrSize + // file_attributes
+      4 + // bytes_read
+      4 + // eof
+      4 + // data of length
+      (dataLength + 4 -1 ) / 4 * 4; // data
+
     ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
     rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
 
     // Status (NFS_OK = 0)
     rpcNfsBuffer.putInt(0);
 
+    // present
+    rpcNfsBuffer.putInt(1);
     // Attributes
     // type (NF3REG = 1)
     rpcNfsBuffer.putInt(1);
     // mode (0644)
-    rpcNfsBuffer.putInt(0644);
+    rpcNfsBuffer.putInt(0755);
     // nlink
-    rpcNfsBuffer.putInt(1);
+    rpcNfsBuffer.putInt(2);
     // uid
     rpcNfsBuffer.putInt(0);
     // gid
     rpcNfsBuffer.putInt(0);
     // size
-    rpcNfsBuffer.putInt(0);
+    rpcNfsBuffer.putLong(4096);
     // used
-    rpcNfsBuffer.putInt(0);
+    rpcNfsBuffer.putLong(4096);
     // rdev
-    rpcNfsBuffer.putInt(0);
+    rpcNfsBuffer.putLong(0);
     // fsid
-    rpcNfsBuffer.putInt(0);
-    rpcNfsBuffer.putInt(0);
+    rpcNfsBuffer.putInt(0x08c60040);  // fsid (major)
+    rpcNfsBuffer.putInt(0x2b5cd8a8);  // fsid (minor)
     // fileid
-    rpcNfsBuffer.putInt(1);
+    rpcNfsBuffer.putLong(0x0000000002000002L);
     // atime
     rpcNfsBuffer.putInt((int)(System.currentTimeMillis() / 1000));
     rpcNfsBuffer.putInt(0);
@@ -874,11 +966,13 @@ public class TcpServerVerticle extends AbstractVerticle {
     rpcNfsBuffer.putInt(0);
 
     // count
-    rpcNfsBuffer.putInt(0);
+    rpcNfsBuffer.putInt(dataLength);
     // eof
     rpcNfsBuffer.putInt(1);
+    // data of length
+    rpcNfsBuffer.putInt(dataLength);
     // data
-    rpcNfsBuffer.putInt(0);
+    rpcNfsBuffer.put(payload);
 
     // Record marking
     int recordMarkValue = 0x80000000 | (rpcMessageBodyLength + rpcNfsLength);
@@ -898,8 +992,12 @@ public class TcpServerVerticle extends AbstractVerticle {
     byte[] fhandle = request.slice(startOffset + 4, startOffset + 4 + fhandleLength).getBytes();
     long offset = request.getLong(startOffset + 4 + fhandleLength);
     int count = request.getInt(startOffset + 4 + fhandleLength + 8);
-    byte[] data = request.slice(startOffset + 4 + fhandleLength + 8 + 4,
-        startOffset + 4 + fhandleLength + 8 + 4 + count).getBytes();
+    int stable = request.getInt(startOffset + 4 + fhandleLength + 8 + 4);
+    int dataOfLength = request.getInt(startOffset + 4 + fhandleLength + 8);
+    byte[] data = request.slice(startOffset + 4 + fhandleLength + 8 + 12,
+        startOffset + 4 + fhandleLength + 8 + 12 + count).getBytes();
+
+    log.info("NFS Write Reply: {}", new String(data, StandardCharsets.UTF_8));
 
     // Create reply
     final int rpcMessageBodyLength = 24;
@@ -915,43 +1013,24 @@ public class TcpServerVerticle extends AbstractVerticle {
     rpcBodyBuffer.putInt(ACCEPT_STAT_SUCCESS);
 
     // NFS WRITE reply
-    int rpcNfsLength = 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4;
+    int rpcNfsLength = 4 + // NFS3_OK
+              4 + // present flag
+              0 + // before - fattr3
+              4 + // present flag
+              0 + // after - fattr3
+              4 + // count
+              4 + // committed (stable_how)
+              8;  // verifier3
+
     ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
     rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
 
     // Status (NFS_OK = 0)
     rpcNfsBuffer.putInt(0);
 
-    // Attributes
-    // type (NF3REG = 1)
-    rpcNfsBuffer.putInt(1);
-    // mode (0644)
-    rpcNfsBuffer.putInt(0644);
-    // nlink
-    rpcNfsBuffer.putInt(1);
-    // uid
+    // before - fattr3 does not exist
     rpcNfsBuffer.putInt(0);
-    // gid
-    rpcNfsBuffer.putInt(0);
-    // size
-    rpcNfsBuffer.putInt(count);
-    // used
-    rpcNfsBuffer.putInt(count);
-    // rdev
-    rpcNfsBuffer.putInt(0);
-    // fsid
-    rpcNfsBuffer.putInt(0);
-    rpcNfsBuffer.putInt(0);
-    // fileid
-    rpcNfsBuffer.putInt(1);
-    // atime
-    rpcNfsBuffer.putInt((int)(System.currentTimeMillis() / 1000));
-    rpcNfsBuffer.putInt(0);
-    // mtime
-    rpcNfsBuffer.putInt((int)(System.currentTimeMillis() / 1000));
-    rpcNfsBuffer.putInt(0);
-    // ctime
-    rpcNfsBuffer.putInt((int)(System.currentTimeMillis() / 1000));
+    // before - fattr3 does not exist
     rpcNfsBuffer.putInt(0);
 
     // count
@@ -1373,8 +1452,8 @@ public class TcpServerVerticle extends AbstractVerticle {
 
     // File attributes
     rpcNfsBuffer.putInt(fileType);  // type (NF3DIR = 2, NF3REG = 1)
-    rpcNfsBuffer.putInt(fileType == 2 ? 0x000001ED : 0x000001A4); // mode (rwxr-xr-x for dir, rw-r--r-- for file)
-    rpcNfsBuffer.putInt(2);  // nlink
+    rpcNfsBuffer.putInt(fileType == 2 ? 0x000001ED : 0x000001ED); // mode (rwxr-xr-x for dir, rw-r--r-- for file)
+    rpcNfsBuffer.putInt(1);  // nlink
     rpcNfsBuffer.putInt(0);  // uid (root)
     rpcNfsBuffer.putInt(0);  // gid (root)
     rpcNfsBuffer.putLong(4096);  // size
@@ -1434,7 +1513,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     log.info("ACCESS response - file type: {}, granted access: 0x{}",
         fileType, Integer.toHexString(accessFlags));
 
-    rpcNfsBuffer.putInt(0x00000003);
+    rpcNfsBuffer.putInt(0x0000001f);
 
     // Record marking
     int recordMarkValue = 0x80000000 | (rpcMessageBodyLength + rpcNfsLength);
