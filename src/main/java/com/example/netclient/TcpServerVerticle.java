@@ -1,5 +1,8 @@
 package com.example.netclient;
 
+import com.example.netclient.enums.Nfs3Constant;
+import com.example.netclient.enums.Nfs3ErrorCode;
+import com.example.netclient.enums.Nfs3Procedure;
 import com.example.netclient.enums.RpcParseState;
 import com.example.netclient.model.ByteArrayKeyWrapper;
 import io.vertx.core.AbstractVerticle;
@@ -11,20 +14,15 @@ import io.vertx.core.net.NetServerOptions;
 import io.vertx.core.net.NetSocket;
 import io.vertx.reactivex.core.parsetools.RecordParser;
 import lombok.extern.slf4j.Slf4j;
-import java.io.ByteArrayOutputStream;
-import java.io.DataOutputStream;
-import java.io.IOException;
+
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
-
-import com.example.netclient.util.NetTool;
 
 
 @Slf4j
@@ -335,85 +333,6 @@ public class TcpServerVerticle extends AbstractVerticle {
   private static final int NFSPROC_ACL_GETACL = 1;
   private static final int NFSPROC_ACL_SETACL = 2;
 
-  // MOUNT Program Constants
-  private static final int MOUNT_PROGRAM = 100005;
-  private static final int MOUNT_VERSION = 3;
-
-  // NFS Procedure Numbers
-  private static final int NFSPROC_NULL = 0;
-  private static final int NFSPROC_GETATTR = 1;
-  private static final int NFSPROC_SETATTR = 2;
-  private static final int NFSPROC_LOOKUP = 3;
-  private static final int NFSPROC_ACCESS = 4;
-  private static final int NFSPROC_READLINK = 5;
-  private static final int NFSPROC_READ = 6;
-  private static final int NFSPROC_WRITE = 7;
-  private static final int NFSPROC_CREATE = 8;
-  private static final int NFSPROC_MKDIR = 9;
-  private static final int NFSPROC_SYMLINK = 10;
-  private static final int NFSPROC_MKNOD = 11;
-  private static final int NFSPROC_REMOVE = 12;
-  private static final int NFSPROC_RMDIR = 13;
-  private static final int NFSPROC_RENAME = 14;
-  private static final int NFSPROC_LINK = 15;
-  private static final int NFSPROC_READDIR = 16;
-  private static final int NFSPROC_READDIRPLUS = 17;
-  private static final int NFSPROC_FSSTAT = 18;
-  private static final int NFSPROC_FSINFO = 19;
-  private static final int NFSPROC_PATHCONF = 20;
-  private static final int NFSPROC_COMMIT = 21;
-
-
-  public static final int NFS3_OK = 0;
-  public static final int NFS3ERR_PERM = 1;
-  public static final int NFS3ERR_NOENT = 2;
-  public static final int NFS3ERR_IO = 5;
-  public static final int NFS3ERR_NXIO = 6;
-  public static final int NFS3ERR_ACCES = 13;
-  public static final int NFS3ERR_EXIST = 17;
-  public static final int NFS3ERR_XDEV = 18;
-  public static final int NFS3ERR_NODEV = 19;
-  public static final int NFS3ERR_NOTDIR = 20;
-  public static final int NFS3ERR_ISDIR = 21;
-  public static final int NFS3ERR_INVAL = 22;
-  public static final int NFS3ERR_FBIG = 27;
-  public static final int NFS3ERR_NOSPC = 28;
-  public static final int NFS3ERR_ROFS  = 30;
-  public static final int NFS3ERR_MLINK = 31;
-  public static final int NFS3ERR_NAMETOOLONG = 63;
-  public static final int NFS3ERR_NOTEMPTY = 66;
-  public static final int NFS3ERR_DQUOT = 69;
-  public static final int NFS3ERR_STALE = 70;
-  public static final int NFS3ERR_REMOTE = 71;
-  public static final int NFS3ERR_BADHANDLE = 10001;
-  public static final int NFS3ERR_NOT_SYNC = 10002;
-  public static final int NFS3ERR_BAD_COOKIE = 10003;
-  public static final int NFS3ERR_NOTSUPP = 10004;
-  public static final int NFS3ERR_TOOSMALL = 10005;
-  public static final int NFS3ERR_SERVERFAULT = 10006;
-  public static final int NFS3ERR_BADTYPE = 10007;
-  public static final int NFS3ERR_JUKEBOX = 10008;
-
-  public static final int FATTRSIZE = 4 + // type
-    4 + // mode
-    4 + // nlink
-    4 + // uid
-    4 + // gid
-    8 + // size
-    8 + // used
-    8 + // rdev
-    4 + // fsid (major)
-    4 + // fsid (minor)
-    8 + // fileid
-    4 + // atime (seconds)
-    4 + // atime (nseconds)
-    4 + // mtime (seconds)
-    4 + // mtime (nseconds)
-    4 + // ctime (seconds)
-    4;  // ctime (nseconds)
-
-
-
   private static Map<String, ByteArrayKeyWrapper> fileNameTofileHandle = new ConcurrentHashMap<>();
   private static Map<String, Long> fileNameTofileId = new ConcurrentHashMap<>();
   private static Map<ByteArrayKeyWrapper, Long> fileHandleToFileId = new ConcurrentHashMap<>();
@@ -451,8 +370,10 @@ public class TcpServerVerticle extends AbstractVerticle {
       // Parse NFS procedure specific data
       startOffset += 8; // Skip verifier
 
+      Nfs3Procedure procedureNumberEnum = Nfs3Procedure.fromCode(procedureNumber);
+
       byte[] xdrReplyBytes = null;
-      switch (procedureNumber) {
+      switch (procedureNumberEnum) {
         case NFSPROC_NULL:
           xdrReplyBytes = createNfsNullReply(xid);
           break;
@@ -506,7 +427,6 @@ public class TcpServerVerticle extends AbstractVerticle {
           break;
         case NFSPROC_READDIRPLUS:
           xdrReplyBytes = createNfsReadDirPlusReply(xid, buffer, startOffset);
-          //xdrReplyBytes = createNfsNullReply(xid);
           break;
         case NFSPROC_FSSTAT:
           xdrReplyBytes = createNfsFSStatReply(xid, buffer, startOffset);
@@ -790,7 +710,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     else {
       // 状态为 Error 的 RPC 报文的长度
       // Status
-      rpcNfsBuffer.putInt(NFS3ERR_NOENT);
+      rpcNfsBuffer.putInt(Nfs3ErrorCode.NFS3ERR_NOENT.getCode());
 
       // Directory attributes present flag (1 = true)
       rpcNfsBuffer.putInt(1);
@@ -936,28 +856,10 @@ public class TcpServerVerticle extends AbstractVerticle {
     byte[] payload = "hello,world\n".getBytes(StandardCharsets.UTF_8);
     int dataLength = payload.length;
 
-    int fattrSize = 4 + // type
-        4 + // mode
-        4 + // nlink
-        4 + // uid
-        4 + // gid
-        8 + // size
-        8 + // used
-        8 + // rdev
-        4 + // fsid (major)
-        4 + // fsid (minor)
-        8 + // fileid
-        4 + // atime (seconds)
-        4 + // atime (nseconds)
-        4 + // mtime (seconds)
-        4 + // mtime (nseconds)
-        4 + // ctime (seconds)
-        4;  // ctime (nseconds)
-
     // NFS READ reply
     int rpcNfsLength = 4 + // NFS3_OK
       4 + // post_op_attr present flag
-      fattrSize + // file_attributes
+      Nfs3Constant.FILE_ATTR_SIZE + // file_attributes
       4 + // bytes_read
       4 + // eof
       4 + // data of length
@@ -1778,7 +1680,7 @@ public class TcpServerVerticle extends AbstractVerticle {
       4 + // file handle length
       fileHandleLength + // file handle
       4 + // post_op_attr present flag
-      FATTRSIZE + // pre_op_attr present flag
+      Nfs3Constant.FILE_ATTR_SIZE + // pre_op_attr present flag
       4 + // dir_wcc before -- present flag
       //24 + // size (8 bytes) + mtime (8 bytes) + ctime (8 bytes)
       4;// + // dir_wcc after -- present flag
@@ -2327,25 +2229,6 @@ public class TcpServerVerticle extends AbstractVerticle {
     List<String> allEntries = fileIdToFileName.entrySet().stream().map(Map.Entry::getValue).collect(Collectors.toList());
 
     // Calculate size for attributes
-    int dirAttrSize =
-        4 + // type
-        4 + // mode
-        4 + // nlink
-        4 + // uid
-        4 + // gid
-        8 + // size
-        8 + // used
-        8 + // rdev
-        4 + // fsid (major)
-        4 + // fsid (minor)
-        8 + // fileid
-        4 + // atime (seconds)
-        4 + // atime (nseconds)
-        4 + // mtime (seconds)
-        4 + // mtime (nseconds)
-        4 + // ctime (seconds)
-        4;  // ctime (nseconds)
-
     int dircount = request.getInt(cookieVeriferOffset + 8);
     int maxcount = request.getInt(cookieVeriferOffset + 12);
     log.info("READDIRPLUS request parameters - dircount: {} bytes, maxcount: {} bytes", dircount, maxcount);
@@ -2353,7 +2236,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     int startIndex = (int) cookie;
     int currentSize = 0;
     int entriesToReturn = 0;
-    int nameAttrSize = dirAttrSize;
+    int nameAttrSize = Nfs3Constant.NAME_ATTR_SIZE;
 
     // Calculate how many entries we can fit within dircount bytes
     for (int i = startIndex; i < allEntries.size(); i++) {
@@ -2403,7 +2286,7 @@ public class TcpServerVerticle extends AbstractVerticle {
 
     int rpcNfsLength = 4 + // status
         4 + // dir_attributes present flag
-        dirAttrSize + // dir_attributes
+        Nfs3Constant.DIR_ATTR_SIZE + // dir_attributes
         8 + // cookieverf
         4 + // entries present flag
         totalEntriesSize + // directory entries
