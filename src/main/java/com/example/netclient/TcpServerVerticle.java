@@ -1,5 +1,7 @@
 package com.example.netclient;
 
+import com.example.netclient.enums.RpcParseState;
+import com.example.netclient.model.ByteArrayKeyWrapper;
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
@@ -31,11 +33,6 @@ public class TcpServerVerticle extends AbstractVerticle {
   private static final int PORT = 12345; // 服务器监听的端口
   private static final String HOST = "0.0.0.0"; // 监听所有网络接口
 
-  private enum RpcParseState {
-    READING_MARKER,
-    READING_FRAGMENT_DATA
-  }
-
   private RpcParseState currentState = RpcParseState.READING_MARKER;
   private int expectedFragmentLength;
   private boolean isLastFragment;
@@ -57,11 +54,11 @@ public class TcpServerVerticle extends AbstractVerticle {
     server.connectHandler(socket -> {
       log.info("客户端连接成功: " + socket.remoteAddress());
 
-
       // RecordParser 会替我们处理 TCP 分片问题
       final RecordParser parser = RecordParser.newFixed(4); // Start by reading 4-byte marker
 
       parser.handler(buffer -> {
+
         if (currentState == RpcParseState.READING_MARKER) {
           // 我们得到了4字节的记录标记
           long recordMarkerRaw = buffer.getUnsignedInt(0); // 读取为无符号整数
@@ -417,10 +414,10 @@ public class TcpServerVerticle extends AbstractVerticle {
 
 
 
-  private static Map<String, byte[]> fileHandlerMap = new ConcurrentHashMap<>();
-  private static Map<String, Long> fileIdMap = new ConcurrentHashMap<>();
-  private static Map<String, Long> fileHandleToFileId = new ConcurrentHashMap<>();
-  private static Map<String, String> fileHandleToFileName = new ConcurrentHashMap<>();
+  private static Map<String, ByteArrayKeyWrapper> fileNameTofileHandle = new ConcurrentHashMap<>();
+  private static Map<String, Long> fileNameTofileId = new ConcurrentHashMap<>();
+  private static Map<ByteArrayKeyWrapper, Long> fileHandleToFileId = new ConcurrentHashMap<>();
+  private static Map<ByteArrayKeyWrapper, String> fileHandleToFileName = new ConcurrentHashMap<>();
   private static Map<Long, String> fileIdToFileName = new ConcurrentHashMap<>();
 
   private void handleNFSRequest(Buffer buffer, NetSocket socket) {
@@ -618,7 +615,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     // post_op_attr
     //rpcNfsBuffer.putInt(0); // present = false
 
-    long fileId = fileHandleToFileId.getOrDefault(new String(fhandle, StandardCharsets.UTF_8), 0x0000000002000002L);
+    long fileId = fileHandleToFileId.getOrDefault(new ByteArrayKeyWrapper(fhandle), 0x0000000002000002L);
     String filename = fileIdToFileName.getOrDefault(fileId, "/");
     int fileType = getFileType(filename);
 
@@ -837,32 +834,24 @@ public class TcpServerVerticle extends AbstractVerticle {
   }
 
   private byte[] getFileHandle(String name, boolean createFlag) {
-    byte[] fileHandle;
-    if(createFlag && !fileHandlerMap.containsKey(name)) {
-       fileHandlerMap.put(name, generateFileHandle(name));
+    if(createFlag && !fileNameTofileHandle.containsKey(name)) {
+      fileNameTofileHandle.put(name, generateFileHandle(name));
     }
-//    String key = "";
-//    for (Map.Entry<String, byte[]> entry : fileHandlerMap.entrySet()) {
-//      key = entry.getKey();
-//      log.info("key: " + key);
-//    }
-//    if (name.equals(key)) {
-//      log.info("我们是相等的");
-//    }
-    fileHandle = fileHandlerMap.get(name);
-    if (fileHandle == null) {
+
+    ByteArrayKeyWrapper fileHandleByteArrayWrapper = fileNameTofileHandle.get(name);
+    if (fileHandleByteArrayWrapper == null) {
       return new byte[0];
     }
-    return fileHandle;
+    return fileHandleByteArrayWrapper.getData();
   }
 
   private long getFileId(String name) {
-    if(!fileIdMap.containsKey(name)) {
+    if(!fileNameTofileId.containsKey(name)) {
       long fileId = generateFileId(name);
-      fileIdMap.put(name, fileId);
+      fileNameTofileId.put(name, fileId);
     }
 
-    long fileId = fileIdMap.get(name);
+    long fileId = fileNameTofileId.get(name);
     return fileId;
   }
 
@@ -882,7 +871,7 @@ public class TcpServerVerticle extends AbstractVerticle {
   }
 
   // Helper method to generate a unique file handle based on the file name
-  private byte[] generateFileHandle(String name) {
+  private ByteArrayKeyWrapper generateFileHandle(String name) {
     // Create a 32-byte file handle
     byte[] handle = new byte[32];
     // Fill with zeros initially
@@ -913,7 +902,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     handle[10] = (byte)(timestamp >> 40);
     handle[11] = (byte)(timestamp >> 32);
 
-    return handle;
+    return new ByteArrayKeyWrapper(handle);
   }
 
   // Helper method to generate a unique file ID based on the file name
@@ -980,7 +969,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     // Status (NFS_OK = 0)
     rpcNfsBuffer.putInt(0);
 
-    long fileId = fileHandleToFileId.getOrDefault(new String(fhandle, StandardCharsets.UTF_8), 0x0000000002000002L);
+    long fileId = fileHandleToFileId.getOrDefault(new ByteArrayKeyWrapper(fhandle), 0x0000000002000002L);
     String filename = fileIdToFileName.getOrDefault(fileId, "/");
     // File attributes
     int fileType =  getFileType(filename);
@@ -1502,7 +1491,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     rpcNfsBuffer.putInt(1);
 
     // Determine file type from handle
-    long fileId = fileHandleToFileId.getOrDefault(new String(fhandle, StandardCharsets.UTF_8), 0x0000000002000002L);
+    long fileId = fileHandleToFileId.getOrDefault(new ByteArrayKeyWrapper(fhandle), 0x0000000002000002L);
     String filename = fileIdToFileName.getOrDefault(fileId, "/");
     // File attributes
     int fileType =  getFileType(filename);
@@ -1853,8 +1842,8 @@ public class TcpServerVerticle extends AbstractVerticle {
     rpcNfsBuffer.putInt(0); // pre_op_attr present = false
     rpcNfsBuffer.putInt(0); // post_op_attr present = false
 
-    fileHandleToFileId.put(new String(fileHandle, StandardCharsets.UTF_8), fileId);
-    fileHandleToFileName.put(new String(fileHandle, StandardCharsets.UTF_8), name);
+    fileHandleToFileId.put(new ByteArrayKeyWrapper(fileHandle), fileId);
+    fileHandleToFileName.put(new ByteArrayKeyWrapper(fileHandle), name);
     fileIdToFileName.put(fileId, name);
 
     // Record marking
@@ -2335,30 +2324,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     rpcBodyBuffer.putInt(ACCEPT_STAT_SUCCESS);
 
     // Define directory entries (simulating a large directory)
-
     List<String> allEntries = fileIdToFileName.entrySet().stream().map(Map.Entry::getValue).collect(Collectors.toList());
-//    String[] allEntries = {
-////        "test.txt",    // Regular file
-////        "docs",        // Directory
-////        "readme.md",   // Regular file
-////        "config.json", // Regular file
-////        "src",         // Directory
-////        "bin",         // Directory
-////        "lib",         // Directory
-////        "include",     // Directory
-////        "share",       // Directory
-////        "etc",         // Directory
-////        "var",         // Directory
-////        "tmp",         // Directory
-////        "usr",         // Directory
-////        "home",        // Directory
-////        "root",        // Directory
-////        "boot",        // Directory
-////        "dev",         // Directory
-////        "proc",        // Directory
-////        "sys",         // Directory
-////        "mnt"          // Directory
-//    };
 
     // Calculate size for attributes
     int dirAttrSize =

@@ -1,5 +1,6 @@
 package com.example.netclient;
 
+import com.example.netclient.enums.RpcParseState;
 import com.example.netclient.utils.NetTool;
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.Promise;
@@ -9,11 +10,14 @@ import io.vertx.core.datagram.DatagramSocket;
 import io.vertx.core.net.NetServer;
 import io.vertx.core.net.NetServerOptions;
 import io.vertx.core.net.NetSocket;
+import io.vertx.reactivex.core.parsetools.RecordParser;
+import lombok.extern.slf4j.Slf4j;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.*;
 
+@Slf4j
 public class CustomPortmapperVerticle extends AbstractVerticle {
 
   private static final int RPCBIND_PORT = 8111;
@@ -60,7 +64,10 @@ public class CustomPortmapperVerticle extends AbstractVerticle {
     }
   }
   private final Map<RpcKey, Integer> serviceRegistry = new HashMap<>();
-
+  private RpcParseState currentState = RpcParseState.READING_MARKER;
+  private int expectedFragmentLength;
+  private boolean isLastFragment;
+  private List<Buffer> messageFragments = new ArrayList<>();
 
   @Override
   public void start(Promise<Void> startPromise) {
@@ -95,29 +102,57 @@ public class CustomPortmapperVerticle extends AbstractVerticle {
   }
 
   private void handleTcpConnection(NetSocket socket) {
-    socket.handler(buffer -> {
-      System.out.println("TCP: Received " + buffer.length() + " bytes from " + socket.remoteAddress());
-      Buffer reply = processRpcRequest(buffer);
-      if (reply != null) {
-        socket.write(reply);
+    RecordParser parser = RecordParser.newFixed(4);
+
+    parser.handler(buffer -> {
+      if (currentState == RpcParseState.READING_MARKER) {
+        int recordMarkerRaw = buffer.getInt(0);
+        isLastFragment = (recordMarkerRaw & 0x80000000) != 0;
+        expectedFragmentLength = recordMarkerRaw & 0x7FFFFFFF;
+
+        // 心跳检测？
+        if (expectedFragmentLength == 0) {
+          parser.fixedSizeMode(4);
+          currentState = RpcParseState.READING_MARKER; // 读头标记模式
+        } else {
+          parser.fixedSizeMode(expectedFragmentLength);
+          currentState = RpcParseState.READING_FRAGMENT_DATA; // 读数据片段模式
+        }
+      } else if (currentState == RpcParseState.READING_FRAGMENT_DATA) {
+        messageFragments.add(buffer);
+
+        if (isLastFragment) {
+          processRpcRequest(socket);
+        }
+
+        parser.fixedSizeMode(4); // 重置为读取下一个标记
+        currentState = RpcParseState.READING_MARKER;
       } else {
-        // Optional: close connection if request is invalid or not handled
-        // socket.close();
+        throw new IllegalStateException("Unexpected state: " + currentState);
       }
     });
+
+    socket.handler(parser);
     socket.exceptionHandler(t -> System.err.println("TCP Socket Exception: " + t.getMessage()));
 
     System.out.println("SERVER: Handlers set for socket " + socket.toString());
   }
 
-  private Buffer processRpcRequest(Buffer request) {
+  private Buffer processRpcRequest(NetSocket socket) {
+    // 将所有片段合并成一个大的 Buffer
+    Buffer request = Buffer.buffer();
+    for (Buffer fragment : messageFragments) {
+      request.appendBuffer(fragment);
+    }
+    messageFragments.clear();
+
     // Basic validation: RPC call message for GETPORT is around 56 bytes
     if (request.length() < 56) {
       System.err.println("Request too short: " + request.length());
       return null;
     }
 
-    System.out.println("Raw request buffer (" + request.length() + " bytes):");
+    System.out.println("Raw Request buffer (" + request.length() + " bytes):");
     // 简单的十六进制打印
     for (int i = 0; i < request.length(); i++) {
       System.out.printf("%02X ", request.getByte(i));
@@ -125,16 +160,15 @@ public class CustomPortmapperVerticle extends AbstractVerticle {
         System.out.println();
       }
     }
-    System.out.println("---- End of Raw Buffer ----");
+    System.out.println("---- End of Raw Request Buffer ----");
 
     try {
-      int recordMakerRaw = request.getInt(0);
-      int xid = request.getInt(4);
-      int msgType = request.getInt(8); // Should be CALL (0)
-      int rpcVersion = request.getInt(12); // Should be 2
-      int program = request.getInt(16);
-      int version = request.getInt(20);
-      int procedure = request.getInt(24);
+      int xid = request.getInt(0);
+      int msgType = request.getInt(4); // Should be CALL (0)
+      int rpcVersion = request.getInt(8); // Should be 2
+      int program = request.getInt(12);
+      int version = request.getInt(16);
+      int procedure = request.getInt(20);
 
       // We only care about calls to portmapper program, version 2, procedure GETPORT
       if (msgType == MSG_TYPE_CALL &&
@@ -144,9 +178,9 @@ public class CustomPortmapperVerticle extends AbstractVerticle {
 
         // Parse GETPORT arguments (offset starts after RPC header + cred + verf = 24 bytes)
         // Offset for prog_to_lookup is 24 (header) + 8 (cred) + 8 (verf) = 40
-        int progToLookup = request.getInt(44);
-        int versToLookup = request.getInt(48);
-        int protToLookup = request.getInt(52);
+        int progToLookup = request.getInt(40);
+        int versToLookup = request.getInt(44);
+        int protToLookup = request.getInt(48);
         // int unused = request.getInt(52);
 
         System.out.println(String.format("GETPORT request: XID=0x%x, Prog=0x%x, Vers=%d, Prot=%d",
@@ -159,7 +193,20 @@ public class CustomPortmapperVerticle extends AbstractVerticle {
 
         System.out.println("Responding with port: " + portResult);
 
-        return createGetPortReply(xid, portResult);
+        Buffer replyBuffer = createGetPortReply(xid, portResult);
+
+        log.info("Raw response buffer (" + replyBuffer.length() + " bytes):");
+        // 简单的十六进制打印
+        for (int i = 0; i < replyBuffer.length(); i++) {
+          System.out.printf("%02X ", replyBuffer.getByte(i));
+          if ((i + 1) % 16 == 0 || i == replyBuffer.length() - 1) {
+            System.out.println();
+          }
+        }
+        log.info("---- End of Raw response Buffer ----");
+
+        socket.write(replyBuffer);
+
       } else {
         System.out.println(String.format("Ignoring RPC call: XID=0x%x, Prog=0x%x, Vers=%d, Proc=%d",
           xid, program, version, procedure));
@@ -172,23 +219,7 @@ public class CustomPortmapperVerticle extends AbstractVerticle {
   }
 
   private Buffer createGetPortReply(int xid, int port) {
-//    Buffer reply = Buffer.buffer(28 + 4); // Standard reply size for GETPORT
-//    int recordMakerRaw = 0x80000000 | 28;
-//    reply.appendInt(recordMakerRaw);
-//    // XID
-//    reply.appendInt(xid);
-//    // Message Type (REPLY = 1)
-//    reply.appendInt(MSG_TYPE_REPLY);
-//    // Reply Status (MSG_ACCEPTED = 0)
-//    reply.appendInt(REPLY_STAT_MSG_ACCEPTED);
-//    // Verifier (AUTH_NULL)
-//    reply.appendInt(AUTH_NULL_FLAVOR); // Flavor
-//    reply.appendInt(AUTH_NULL_LENGTH); // Length
-//    // Accept Status (SUCCESS = 0)
-//    reply.appendInt(ACCEPT_STAT_SUCCESS);
-//    // Port Number
-//    reply.appendInt(port);
-
+    // Standard reply size for GETPORT
     final int rpcMessageBodyLength = 28;
 
     // --- Create ByteBuffer for the RPC Message Body ---
