@@ -1008,7 +1008,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     rpcNfsBuffer.putInt(0x08c60040);  // fsid (major)
     rpcNfsBuffer.putInt(0x2b5cd8a8);  // fsid (minor)
     // fileid
-    rpcNfsBuffer.putLong(0x0000000002000002L);
+    rpcNfsBuffer.putLong(fileId);
     // atime
     rpcNfsBuffer.putInt((int)(System.currentTimeMillis() / 1000));
     rpcNfsBuffer.putInt(0);
