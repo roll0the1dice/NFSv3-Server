@@ -9,7 +9,7 @@ import java.nio.ByteBuffer;
 @Data
 @AllArgsConstructor
 @Builder
-public class LOOKUP3resfail {
+public class ACCESS3resfail {
   int dirPresentFlag;
   FAttr3 dirAttributes;
 
@@ -17,6 +17,8 @@ public class LOOKUP3resfail {
     buffer.putInt(dirPresentFlag);
     if (dirPresentFlag != 0 && dirAttributes != null) {
       dirAttributes.serialize(buffer);
+    } else {
+      buffer.putInt(0);
     }
   }
 

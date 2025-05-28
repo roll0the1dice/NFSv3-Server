@@ -594,26 +594,6 @@ public class TcpServerVerticle extends AbstractVerticle {
     int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
     ByteBuffer rpcHeaderBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
 
-    // Calculate size for attributes
-    int attrSize =
-        4 + // type
-        4 + // mode
-        4 + // nlink
-        4 + // uid
-        4 + // gid
-        8 + // size
-        8 + // used
-        8 + // rdev
-        4 + // fsid (major)
-        4 + // fsid (minor)
-        8 + // fileid
-        4 + // atime (seconds)
-        4 + // atime (nseconds)
-        4 + // mtime (seconds)
-        4 + // mtime (nseconds)
-        4 + // ctime (seconds)
-        4;  // ctime (nseconds)
-
     // Generate a unique file handle based on the name
 
     byte[] fileHandle = getFileHandle(name, false);
@@ -621,19 +601,6 @@ public class TcpServerVerticle extends AbstractVerticle {
     int fileHandleLength = fileHandle.length;
 
     log.info("Generated file handle for '{}': {}", name, bytesToHex(fileHandle));
-
-    int rpcNfsOKLength = 4 + // status
-        4 + // object handle length
-        fileHandleLength + // object handle data
-        4 + // obj_attributes present flag
-        Nfs3Constant.FILE_ATTR_SIZE + // obj_attributes
-        4;
-        // 不展示文件所在的目录，所以不加上目录的大小
-        // + // dir_attributes present flag
-        // attrSize;  // dir_attributes
-    int rpcNfsErrorLength = 4 + // status
-        4 + // present
-      Nfs3Constant.FILE_ATTR_SIZE;
 
     // Current time in seconds and nanoseconds
     long currentTimeMillis = System.currentTimeMillis();
@@ -700,6 +667,7 @@ public class TcpServerVerticle extends AbstractVerticle {
           .dirPresentFlag(1)
           .dirAttributes(dirAttr3)
           .build();
+
       lookup3res = LOOKUP3res.createFail(NfsStat3.NFS3ERR_NOENT, lookup3resfail);
     }
 
@@ -1276,94 +1244,39 @@ public class TcpServerVerticle extends AbstractVerticle {
         fhandleLength, Integer.toHexString(accessRequest));
 
     // Create reply
-    final int rpcMessageBodyLength = 24;
-    ByteBuffer rpcBodyBuffer = ByteBuffer.allocate(rpcMessageBodyLength);
-    rpcBodyBuffer.order(ByteOrder.BIG_ENDIAN);
-
-    // Standard RPC reply header
-    rpcBodyBuffer.putInt(xid);
-    rpcBodyBuffer.putInt(MSG_TYPE_REPLY);
-    rpcBodyBuffer.putInt(REPLY_STAT_MSG_ACCEPTED);
-    rpcBodyBuffer.putInt(VERF_FLAVOR_AUTH_NONE);
-    rpcBodyBuffer.putInt(VERF_LENGTH_ZERO);
-    rpcBodyBuffer.putInt(ACCEPT_STAT_SUCCESS);
-
-    // Calculate size for attributes
-    int attrSize =
-        4 + // type
-        4 + // mode
-        4 + // nlink
-        4 + // uid
-        4 + // gid
-        8 + // size
-        8 + // used
-        8 + // rdev
-        4 + // fsid (major)
-        4 + // fsid (minor)
-        8 + // fileid
-        4 + // atime (seconds)
-        4 + // atime (nseconds)
-        4 + // mtime (seconds)
-        4 + // mtime (nseconds)
-        4 + // ctime (seconds)
-        4;  // ctime (nseconds)
+    int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
+    ByteBuffer rpcHeaderBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
 
     // NFS ACCESS reply
-    // Structure:
-    // status (4 bytes)
-    // post_op_attr present flag (4 bytes)
-    // post_op_attr (attrSize bytes)
-    // access (4 bytes)
-    int rpcNfsLength = 4 + // status
-        4 + // post_op_attr present flag
-        attrSize + // post_op_attr
-        4;  // access
-
-    ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
-    rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
-
-    // Status (NFS_OK = 0)
-    rpcNfsBuffer.putInt(0);
-
-    // post_op_attr present flag (1 = true)
-    rpcNfsBuffer.putInt(1);
-
     // Determine file type from handle
     long fileId = fileHandleToFileId.getOrDefault(new ByteArrayKeyWrapper(fhandle), 0x0000000002000002L);
     String filename = fileIdToFileName.getOrDefault(fileId, "/");
     // File attributes
     int fileType =  getFileType(filename);
-
-    // File attributes
-    rpcNfsBuffer.putInt(fileType);  // type (NF3DIR = 2, NF3REG = 1)
-    rpcNfsBuffer.putInt(fileType == 2 ? 0x000001ED : 0x000001ED); // mode (rwxr-xr-x for dir, rw-r--r-- for file)
-    rpcNfsBuffer.putInt(1);  // nlink
-    rpcNfsBuffer.putInt(0);  // uid (root)
-    rpcNfsBuffer.putInt(0);  // gid (root)
-    rpcNfsBuffer.putLong(4096);  // size
-    rpcNfsBuffer.putLong(4096);  // used
-    rpcNfsBuffer.putLong(0);  // rdev
-    rpcNfsBuffer.putInt(0x08c60040);  // fsid (major)
-    rpcNfsBuffer.putInt(0x2b5cd8a8);  // fsid (minor)
-
-    rpcNfsBuffer.putLong(fileId);  // fileid
-
     // Current time in seconds and nanosecondsG
     long currentTimeMillis = System.currentTimeMillis();
     int seconds = (int)(currentTimeMillis / 1000);
     int nseconds = (int)((currentTimeMillis % 1000) * 1_000_000);
 
-    // atime
-    rpcNfsBuffer.putInt(seconds);  // atime (seconds)
-    rpcNfsBuffer.putInt(nseconds);  // atime (nseconds)
-
-    // mtime
-    rpcNfsBuffer.putInt(seconds);  // mtime (seconds)
-    rpcNfsBuffer.putInt(nseconds);  // mtime (nseconds)
-
-    // ctime
-    rpcNfsBuffer.putInt(seconds);  // ctime (seconds)
-    rpcNfsBuffer.putInt(nseconds);  // ctime (nseconds)
+    FAttr3 dirAttr3 = FAttr3.builder()
+      .type(fileType)
+      .mode(0x000001ED)
+      .nlink(1)
+      .uid(0)
+      .gid(0)
+      .size(4096)
+      .used(4096)
+      .rdev(0)
+      .fsidMajor(0x08c60040)
+      .fsidMinor(0x2b5cd8a8)
+      .fileid(fileId)
+      .atimeSeconds(seconds)
+      .atimeNseconds(nseconds)
+      .mtimeSeconds(seconds)
+      .mtimeNseconds(nseconds)
+      .ctimeSeconds(seconds)
+      .ctimeNseconds(nseconds)
+      .build();
 
     // ACCESS flags
     // ACCESS_READ     = 0x0001
@@ -1372,40 +1285,51 @@ public class TcpServerVerticle extends AbstractVerticle {
     // ACCESS_EXTEND   = 0x0008
     // ACCESS_DELETE   = 0x0010
     // ACCESS_EXECUTE  = 0x0020
-
     int accessFlags = 0;
 
     if (fileType == 2) { // Directory
-        // For directories, allow READ, LOOKUP, MODIFY, EXTEND, DELETE
-        accessFlags = 0x0001 | // ACCESS_READ
-                     0x0002 | // ACCESS_LOOKUP
-                     0x0004 | // ACCESS_MODIFY
-                     0x0008 | // ACCESS_EXTEND
-                     0x0010;  // ACCESS_DELETE
+      // For directories, allow READ, LOOKUP, MODIFY, EXTEND, DELETE
+      accessFlags = 0x0001 | // ACCESS_READ
+        0x0002 | // ACCESS_LOOKUP
+        0x0004 | // ACCESS_MODIFY
+        0x0008 | // ACCESS_EXTEND
+        0x0010;  // ACCESS_DELETE
     } else { // Regular file
-        // For regular files, allow READ, MODIFY, EXTEND, DELETE, EXECUTE
-        accessFlags = 0x0001 | // ACCESS_READ
-                     0x0004 | // ACCESS_MODIFY
-                     0x0008 | // ACCESS_EXTEND
-                     0x0010 | // ACCESS_DELETE
-                     0x0020;  // ACCESS_EXECUTE
+      // For regular files, allow READ, MODIFY, EXTEND, DELETE, EXECUTE
+      accessFlags = 0x0001 | // ACCESS_READ
+        0x0004 | // ACCESS_MODIFY
+        0x0008 | // ACCESS_EXTEND
+        0x0010 | // ACCESS_DELETE
+        0x0020;  // ACCESS_EXECUTE
     }
 
     // Only return the flags that were requested
     accessFlags &= accessRequest;
 
     log.info("ACCESS response - file type: {}, granted access: 0x{}",
-        fileType, Integer.toHexString(accessFlags));
+      fileType, Integer.toHexString(accessFlags));
 
-    rpcNfsBuffer.putInt(0x0000001f);
+    ACCESS3resok access3resok = ACCESS3resok.builder()
+      .objPresentFlag(1)
+      .objAttributes(dirAttr3)
+      .accessFlags(accessFlags)
+      .build();
+
+    ACCESS3res access3res = ACCESS3res.createOk(access3resok);
+
+    int rpcNfsLength = access3res.getSerializedSize();
+    ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
+    rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
+
+    access3res.serialize(rpcNfsBuffer);
 
     // Record marking
-    int recordMarkValue = 0x80000000 | (rpcMessageBodyLength + rpcNfsLength);
+    int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
 
-    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcMessageBodyLength + rpcNfsLength);
+    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcHeaderLength + rpcNfsLength);
     fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
     fullResponseBuffer.putInt(recordMarkValue);
-    fullResponseBuffer.put(rpcBodyBuffer.array());
+    fullResponseBuffer.put(rpcHeaderBuffer.array());
     fullResponseBuffer.put(rpcNfsBuffer.array());
 
     return fullResponseBuffer.array();
@@ -2147,27 +2071,19 @@ public class TcpServerVerticle extends AbstractVerticle {
     log.info("Received READDIRPLUS request with cookie: {}", cookie);
 
     int cookieVeriferOffset = cookieOffset + 8;
+    int dircount = request.getInt(cookieVeriferOffset + 8);
+    int maxcount = request.getInt(cookieVeriferOffset + 12);
+    log.info("READDIRPLUS request parameters - dircount: {} bytes, maxcount: {} bytes", dircount, maxcount);
 
     // Create reply
-    final int rpcMessageBodyLength = 24;
-    ByteBuffer rpcBodyBuffer = ByteBuffer.allocate(rpcMessageBodyLength);
-    rpcBodyBuffer.order(ByteOrder.BIG_ENDIAN);
-
-    // Standard RPC reply header
-    rpcBodyBuffer.putInt(xid);
-    rpcBodyBuffer.putInt(MSG_TYPE_REPLY);
-    rpcBodyBuffer.putInt(REPLY_STAT_MSG_ACCEPTED);
-    rpcBodyBuffer.putInt(VERF_FLAVOR_AUTH_NONE);
-    rpcBodyBuffer.putInt(VERF_LENGTH_ZERO);
-    rpcBodyBuffer.putInt(ACCEPT_STAT_SUCCESS);
+    int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
+    ByteBuffer rpcHeaderBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
 
     // Define directory entries (simulating a large directory)
     List<String> allEntries = fileIdToFileName.entrySet().stream().map(Map.Entry::getValue).collect(Collectors.toList());
 
     // Calculate size for attributes
-    int dircount = request.getInt(cookieVeriferOffset + 8);
-    int maxcount = request.getInt(cookieVeriferOffset + 12);
-    log.info("READDIRPLUS request parameters - dircount: {} bytes, maxcount: {} bytes", dircount, maxcount);
+
 
     int startIndex = (int) cookie;
     int currentSize = 0;
@@ -2175,205 +2091,304 @@ public class TcpServerVerticle extends AbstractVerticle {
     int nameAttrSize = Nfs3Constant.NAME_ATTR_SIZE;
 
     // Calculate how many entries we can fit within dircount bytes
-    for (int i = startIndex; i < allEntries.size(); i++) {
-        String entryName = allEntries.get(i);
-        int entrySize = 4 + // fileid
-                       4 + // name length
-          entryName.length() + // name
-                       8 + // cookie
-                       4 + // name present
-            nameAttrSize + // attributes
-                       4;  // next entry present
+//    for (int i = startIndex; i < allEntries.size(); i++) {
+//        String entryName = allEntries.get(i);
+//          int entrySize = 4 + // fileid
+//                       4 + // name length
+//          entryName.length() + // name
+//                       8 + // cookie
+//                       4 + // name present
+//            nameAttrSize + // attributes
+//                       4;  // next entry present
+//
+//        log.info("Entry '{}' size: {} bytes, current total: {} bytes (dircount limit: {} bytes)",
+//                entryName, entrySize, currentSize + entrySize, dircount);
+//
+//        if (currentSize + entrySize > dircount) {
+//            log.info("Stopping at entry '{}' as it would exceed dircount limit of {} bytes", entryName, dircount);
+//            break;
+//        }
+//
+//        currentSize += entrySize;
+//        entriesToReturn++;
+//    }
 
-        log.info("Entry '{}' size: {} bytes, current total: {} bytes (dircount limit: {} bytes)",
-                entryName, entrySize, currentSize + entrySize, dircount);
+//    boolean isLastPage = (startIndex + entriesToReturn) >= allEntries.size();
+//
+//    int tmpDirFhandleLength = dirFhandleLength;
+//    // Calculate total size for entries to return
+//    int totalEntriesSize = 0;
+//    for (int i = startIndex; i < startIndex + entriesToReturn; i++) {
+//        String entry = allEntries.get(i);
+//        int entryNameLength = entry.length();
+//        totalEntriesSize += 8 + // fileid
+//            4 + // name length
+//            ((entryNameLength + 3) & ~3)   + // name (padded to 4 bytes)
+//            8 + // cookie
+//            4 + // name_attributes present flag
+//            nameAttrSize + // name_attributes
+//            4 + // name_handle present flag
+//            4 + // handle length
+//          tmpDirFhandleLength + // handle data
+//            4;  // nextentry present flag
+//    }
 
-        if (currentSize + entrySize > dircount) {
-            log.info("Stopping at entry '{}' as it would exceed dircount limit of {} bytes", entryName, dircount);
-            break;
-        }
+//    int rpcNfsLength = 4 + // status
+//        4 + // dir_attributes present flag
+//        Nfs3Constant.DIR_ATTR_SIZE + // dir_attributes
+//        8 + // cookieverf
+//        4 + // entries present flag
+//        totalEntriesSize + // directory entries
+//        4;  // eof flag
 
-        currentSize += entrySize;
-        entriesToReturn++;
-    }
-
-    log.info("Will return {} entries starting from index {} (total size: {} bytes)",
-            entriesToReturn, startIndex, currentSize);
-
-    boolean isLastPage = (startIndex + entriesToReturn) >= allEntries.size();
-
-    int tmpDirFhandleLength = dirFhandleLength;
-    // Calculate total size for entries to return
-    int totalEntriesSize = 0;
-    for (int i = startIndex; i < startIndex + entriesToReturn; i++) {
-        String entry = allEntries.get(i);
-        int entryNameLength = entry.length();
-        totalEntriesSize += 8 + // fileid
-            4 + // name length
-            ((entryNameLength + 3) & ~3)   + // name (padded to 4 bytes)
-            8 + // cookie
-            4 + // name_attributes present flag
-            nameAttrSize + // name_attributes
-            4 + // name_handle present flag
-            4 + // handle length
-          tmpDirFhandleLength + // handle data
-            4;  // nextentry present flag
-    }
-
-    int rpcNfsLength = 4 + // status
-        4 + // dir_attributes present flag
-        Nfs3Constant.DIR_ATTR_SIZE + // dir_attributes
-        8 + // cookieverf
-        4 + // entries present flag
-        totalEntriesSize + // directory entries
-        4;  // eof flag
-
-    ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
-    rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
-
-    // Status (NFS_OK = 0)
-    rpcNfsBuffer.putInt(0);
-
-    // dir_attributes present flag (1 = true)
-    rpcNfsBuffer.putInt(1);
-
-    // Directory attributes
-    rpcNfsBuffer.putInt(2);  // type (NF3DIR = 2, directory)
-    rpcNfsBuffer.putInt(0x000001ED); // mode (rwxr-xr-x)
-    rpcNfsBuffer.putInt(1);  // nlink
-    rpcNfsBuffer.putInt(0);  // uid (root)
-    rpcNfsBuffer.putInt(0);  // gid (root)
-    rpcNfsBuffer.putLong(4096);  // size (4KB)
-    rpcNfsBuffer.putLong(4096);  // used (4KB)
-    rpcNfsBuffer.putLong(0);  // rdev (0 for directories)
-    rpcNfsBuffer.putInt(0x08c60040);  // fsid (major)
-    rpcNfsBuffer.putInt(0x2b5cd8a8);  // fsid (minor)
-    rpcNfsBuffer.putLong(0x0000000002000002L);  // fileid
-
-    // Current time in seconds and nanoseconds
     long currentTimeMillis = System.currentTimeMillis();
     int seconds = (int)(currentTimeMillis / 1000);
     int nseconds = (int)((currentTimeMillis % 1000) * 1_000_000);
 
-    // atime
-    rpcNfsBuffer.putInt(seconds);  // atime (seconds)
-    rpcNfsBuffer.putInt(nseconds);  // atime (nseconds)
+    List<Entryplus3> entries = new ArrayList<>();
 
-    // mtime
-    rpcNfsBuffer.putInt(seconds);  // mtime (seconds)
-    rpcNfsBuffer.putInt(nseconds);  // mtime (nseconds)
+    for (int i = 0; i < allEntries.size(); i++) {
+      String entryName = allEntries.get(i);
+      int entryNameLength = entryName.length();
+      long fileId = getFileId(entryName);
+      byte[] nameBytes = entryName.getBytes(StandardCharsets.UTF_8);
+      long nextCookie = 0;
+      if (i == allEntries.size() - 1) {
+        // 注意：
+        // cookie 不返回这个会导致无限循环
+        nextCookie = 0x7fffffffffffffffL;
+      } else {
+        nextCookie = i + 1;
+      }
 
-    // ctime
-    rpcNfsBuffer.putInt(seconds);  // ctime (seconds)
-    rpcNfsBuffer.putInt(nseconds);  // ctime (nseconds)
+      log.info("Entry '{}' size: {} bytes, current total: {} bytes (dircount limit: {} bytes)",
+        entryName, entryNameLength, currentSize, dircount);
 
-    // cookieverf (use current time as verifier)
-    rpcNfsBuffer.putLong(0L);
+      int fileType = getFileType(entryName);
+      FAttr3 nameAttr = FAttr3.builder()
+        .type(fileType)
+        .mode(0x000001ED)
+        .nlink(1)
+        .uid(0)
+        .gid(0)
+        .size(4096)
+        .used(4096)
+        .rdev(0)
+        .fsidMajor(0x08c60040)
+        .fsidMinor(0x2b5cd8a8)
+        .fileid(fileId)
+        .atimeSeconds(seconds)
+        .atimeNseconds(nseconds)
+        .mtimeSeconds(seconds)
+        .mtimeNseconds(nseconds)
+        .ctimeSeconds(seconds)
+        .mtimeNseconds(nseconds)
+        .build();
 
-    // entries present flag (1 = true if we have entries to return)
-    rpcNfsBuffer.putInt(entriesToReturn > 0 ? 1 : 0);
+      Entryplus3 entryplus3 = Entryplus3.builder()
+        .fileid(fileId)
+        .fileNameLength(entryNameLength)
+        .fileName(nameBytes)
+        .cookie(nextCookie)
+        .nameAttrPresent(1)
+        .nameAttr(nameAttr)
+        .nameHandlePresent(1)
+        .nameHandleLength(dirFhandleLength)
+        .nameHandle(dirFhandle)
+        .nextEntryPresent(i == allEntries.size() - 1 ? 0 : 1)
+        .build();
 
-    // Add directory entries for this page
-    for (int i = 0; i < entriesToReturn; i++) {
-        int entryIndex = startIndex + i;
-        String entryName = allEntries.get(entryIndex); // [entryIndex];
-        int entryNameLength = entryName.length();
+      entries.add(entryplus3);
 
-        log.info("Sending entry {}: '{}' at index {}", i + 1, entryName, entryIndex);
-
-        long fileId = getFileId(entryName);
-        // fileid (unique for each entry)
-        rpcNfsBuffer.putLong(fileId);
-
-        // name length and name
-        rpcNfsBuffer.putInt(entryNameLength);
-        byte[] nameBytes = entryName.getBytes();
-        rpcNfsBuffer.put(nameBytes);
-        // Pad name to 4 bytes
-        int padding = ((entryNameLength + 3) & ~3) - entryNameLength;
-        for (int j = 0; j < padding; j++) {
-            rpcNfsBuffer.put((byte)0);
-        }
-
-        // cookie (use the next entry's index as cookie)
-        // For the last entry in the page, use 0 if it's the last page
-        long nextCookie;
-        if (i == entriesToReturn - 1 && isLastPage) {
-            // 注意：
-            // cookie 不返回这个会导致无限循环
-            nextCookie = 0x7fffffffffffffffL;
-        } else {
-            nextCookie = entryIndex + 1;
-        }
-
-        rpcNfsBuffer.putLong(nextCookie);
-        //rpcNfsBuffer.putLong(0x7fffffffffffffffL);
-
-        log.info("Entry '{}' cookie: {} (isLastPage: {}, isLastEntry: {})",
-                entryName, nextCookie, isLastPage, i == entriesToReturn - 1);
-
-        // name_attributes present flag (1 = true)
-        rpcNfsBuffer.putInt(1);
-
-        int fileType = getFileType(entryName);
-        // File attributes
-        if (fileType == 2) {
-            rpcNfsBuffer.putInt(2);  // type (NF3DIR = 2, directory)
-            rpcNfsBuffer.putInt(0x000001ED); // mode (rwxr-xr-x)
-        } else {
-            rpcNfsBuffer.putInt(1);  // type (NF3REG = 1, regular file)
-            rpcNfsBuffer.putInt(0x000001A4); // mode (rw-r--r--)
-        }
-        rpcNfsBuffer.putInt(1);  // nlink
-        rpcNfsBuffer.putInt(0);  // uid (root)
-        rpcNfsBuffer.putInt(0);  // gid (root)
-        rpcNfsBuffer.putLong(4096);  // size
-        rpcNfsBuffer.putLong(4096);  // used
-        rpcNfsBuffer.putLong(0);  // rdev
-        rpcNfsBuffer.putInt(0x08c60040);  // fsid (major)
-        rpcNfsBuffer.putInt(0x2b5cd8a8);  // fsid (minor)
-
-        rpcNfsBuffer.putLong(fileId);  // fileid
-        //rpcNfsBuffer.putLong(0x0000000002000002L);
-
-        // atime
-        rpcNfsBuffer.putInt(seconds);  // atime (seconds)
-        rpcNfsBuffer.putInt(nseconds);  // atime (nseconds)
-
-        // mtime
-        rpcNfsBuffer.putInt(seconds);  // mtime (seconds)
-        rpcNfsBuffer.putInt(nseconds);  // mtime (nseconds)
-
-        // ctime
-        rpcNfsBuffer.putInt(seconds);  // ctime (seconds)
-        rpcNfsBuffer.putInt(nseconds);  // ctime (nseconds)
-
-        // name_handle present flag (1 = true)
-        rpcNfsBuffer.putInt(1);
-
-        // File handle
-        rpcNfsBuffer.putInt(dirFhandleLength); // handle length
-
-        // 0100070102000002000000003e3e7dae34c9471896e6218574c9811006000002781980a5
-//        String dataLiteral = "0100070002000002000000003e3e7dae34c9471896e6218574c98110";
-//        byte[] fileHandle = NetTool.hexStringToByteArray(dataLiteral);
-        rpcNfsBuffer.put(dirFhandle); // handle data
-
-        // nextentry present flag (1 if not last entry in this page, 0 if last entry)
-        rpcNfsBuffer.putInt(i < entriesToReturn - 1 ? 1 : 0);
+      currentSize += entryplus3.getSerializedSize();
     }
 
-    // eof flag (1 = true if this is the last page)
-    rpcNfsBuffer.putInt(1);
+    log.info("Will return {} entries starting from index {} (total size: {} bytes)",
+      entries.size(), 0, currentSize);
+
+    FAttr3 dirAttr = FAttr3.builder()
+      .type(2)
+      .mode(0x000001ED)
+      .nlink(1)
+      .uid(0)
+      .gid(0)
+      .size(4096)
+      .used(4096)
+      .rdev(0)
+      .fsidMajor(0x08c60040)
+      .fsidMinor(0x2b5cd8a8)
+      .fileid(0x0000000002000002L)
+      .atimeSeconds(seconds)
+      .atimeNseconds(nseconds)
+      .mtimeSeconds(seconds)
+      .mtimeNseconds(nseconds)
+      .ctimeSeconds(seconds)
+      .mtimeNseconds(nseconds)
+      .build();
+
+    int entriesPresentFlag = entries.isEmpty() ? 0 : 1;
+
+    READDIRPLUS3resok readdirplus3resok = READDIRPLUS3resok.builder()
+      .dirAttrPresentFlag(1)
+      .dirAttr(dirAttr)
+      .cookieverf(0L)
+      .entriesPresentFlag(entriesPresentFlag)
+      .entries(entries)
+      .eof(1)
+      .build();
+
+    READDIRPLUS3res readdirplus3res = READDIRPLUS3res.createOk(readdirplus3resok);
+
+    int rpcNfsLength = readdirplus3res.getSerializedSize();
+
+    ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
+    rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
+
+    readdirplus3res.serialize(rpcNfsBuffer);
+
+//    // Status (NFS_OK = 0)
+//    rpcNfsBuffer.putInt(0);
+//
+//    // dir_attributes present flag (1 = true)
+//    rpcNfsBuffer.putInt(1);
+//
+//    // Directory attributes
+//    rpcNfsBuffer.putInt(2);  // type (NF3DIR = 2, directory)
+//    rpcNfsBuffer.putInt(0x000001ED); // mode (rwxr-xr-x)
+//    rpcNfsBuffer.putInt(1);  // nlink
+//    rpcNfsBuffer.putInt(0);  // uid (root)
+//    rpcNfsBuffer.putInt(0);  // gid (root)
+//    rpcNfsBuffer.putLong(4096);  // size (4KB)
+//    rpcNfsBuffer.putLong(4096);  // used (4KB)
+//    rpcNfsBuffer.putLong(0);  // rdev (0 for directories)
+//    rpcNfsBuffer.putInt(0x08c60040);  // fsid (major)
+//    rpcNfsBuffer.putInt(0x2b5cd8a8);  // fsid (minor)
+//    rpcNfsBuffer.putLong(0x0000000002000002L);  // fileid
+//
+//    // Current time in seconds and nanoseconds
+//    long currentTimeMillis = System.currentTimeMillis();
+//    int seconds = (int)(currentTimeMillis / 1000);
+//    int nseconds = (int)((currentTimeMillis % 1000) * 1_000_000);
+//
+//    // atime
+//    rpcNfsBuffer.putInt(seconds);  // atime (seconds)
+//    rpcNfsBuffer.putInt(nseconds);  // atime (nseconds)
+//
+//    // mtime
+//    rpcNfsBuffer.putInt(seconds);  // mtime (seconds)
+//    rpcNfsBuffer.putInt(nseconds);  // mtime (nseconds)
+//
+//    // ctime
+//    rpcNfsBuffer.putInt(seconds);  // ctime (seconds)
+//    rpcNfsBuffer.putInt(nseconds);  // ctime (nseconds)
+//
+//    // cookieverf (use current time as verifier)
+//    rpcNfsBuffer.putLong(0L);
+//
+//    // entries present flag (1 = true if we have entries to return)
+//    rpcNfsBuffer.putInt(entriesToReturn > 0 ? 1 : 0);
+//
+//    // Add directory entries for this page
+//    for (int i = 0; i < entriesToReturn; i++) {
+//        int entryIndex = startIndex + i;
+//        String entryName = allEntries.get(entryIndex); // [entryIndex];
+//        int entryNameLength = entryName.length();
+//
+//        log.info("Sending entry {}: '{}' at index {}", i + 1, entryName, entryIndex);
+//
+//        long fileId = getFileId(entryName);
+//        // fileid (unique for each entry)
+//        rpcNfsBuffer.putLong(fileId);
+//
+//        // name length and name
+//        rpcNfsBuffer.putInt(entryNameLength);
+//        byte[] nameBytes = entryName.getBytes();
+//        rpcNfsBuffer.put(nameBytes);
+//        // Pad name to 4 bytes
+//        int padding = ((entryNameLength + 3) & ~3) - entryNameLength;
+//        for (int j = 0; j < padding; j++) {
+//            rpcNfsBuffer.put((byte)0);
+//        }
+//
+//        // cookie (use the next entry's index as cookie)
+//        // For the last entry in the page, use 0 if it's the last page
+//        long nextCookie;
+//        if (i == entriesToReturn - 1 && isLastPage) {
+//            // 注意：
+//            // cookie 不返回这个会导致无限循环
+//            nextCookie = 0x7fffffffffffffffL;
+//        } else {
+//            nextCookie = entryIndex + 1;
+//        }
+//
+//        rpcNfsBuffer.putLong(nextCookie);
+//        //rpcNfsBuffer.putLong(0x7fffffffffffffffL);
+//
+//        log.info("Entry '{}' cookie: {} (isLastPage: {}, isLastEntry: {})",
+//                entryName, nextCookie, isLastPage, i == entriesToReturn - 1);
+//
+//        // name_attributes present flag (1 = true)
+//        rpcNfsBuffer.putInt(1);
+//
+//        int fileType = getFileType(entryName);
+//        // File attributes
+//        if (fileType == 2) {
+//            rpcNfsBuffer.putInt(2);  // type (NF3DIR = 2, directory)
+//            rpcNfsBuffer.putInt(0x000001ED); // mode (rwxr-xr-x)
+//        } else {
+//            rpcNfsBuffer.putInt(1);  // type (NF3REG = 1, regular file)
+//            rpcNfsBuffer.putInt(0x000001A4); // mode (rw-r--r--)
+//        }
+//        rpcNfsBuffer.putInt(1);  // nlink
+//        rpcNfsBuffer.putInt(0);  // uid (root)
+//        rpcNfsBuffer.putInt(0);  // gid (root)
+//        rpcNfsBuffer.putLong(4096);  // size
+//        rpcNfsBuffer.putLong(4096);  // used
+//        rpcNfsBuffer.putLong(0);  // rdev
+//        rpcNfsBuffer.putInt(0x08c60040);  // fsid (major)
+//        rpcNfsBuffer.putInt(0x2b5cd8a8);  // fsid (minor)
+//
+//        rpcNfsBuffer.putLong(fileId);  // fileid
+//        //rpcNfsBuffer.putLong(0x0000000002000002L);
+//
+//        // atime
+//        rpcNfsBuffer.putInt(seconds);  // atime (seconds)
+//        rpcNfsBuffer.putInt(nseconds);  // atime (nseconds)
+//
+//        // mtime
+//        rpcNfsBuffer.putInt(seconds);  // mtime (seconds)
+//        rpcNfsBuffer.putInt(nseconds);  // mtime (nseconds)
+//
+//        // ctime
+//        rpcNfsBuffer.putInt(seconds);  // ctime (seconds)
+//        rpcNfsBuffer.putInt(nseconds);  // ctime (nseconds)
+//
+//        // name_handle present flag (1 = true)
+//        rpcNfsBuffer.putInt(1);
+//
+//        // File handle
+//        rpcNfsBuffer.putInt(dirFhandleLength); // handle length
+//
+//        // 0100070102000002000000003e3e7dae34c9471896e6218574c9811006000002781980a5
+////        String dataLiteral = "0100070002000002000000003e3e7dae34c9471896e6218574c98110";
+////        byte[] fileHandle = NetTool.hexStringToByteArray(dataLiteral);
+//        rpcNfsBuffer.put(dirFhandle); // handle data
+//
+//        // nextentry present flag (1 if not last entry in this page, 0 if last entry)
+//        rpcNfsBuffer.putInt(i < entriesToReturn - 1 ? 1 : 0);
+//    }
+//
+//    // eof flag (1 = true if this is the last page)
+//    rpcNfsBuffer.putInt(1);
     //rpcNfsBuffer.putInt(1);
 
     // Record marking
-    int recordMarkValue = 0x80000000 | (rpcMessageBodyLength + rpcNfsLength);
+    int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
 
-    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcMessageBodyLength + rpcNfsLength);
+    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcHeaderLength + rpcNfsLength);
     fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
     fullResponseBuffer.putInt(recordMarkValue);
-    fullResponseBuffer.put(rpcBodyBuffer.array());
+    fullResponseBuffer.put(rpcHeaderBuffer.array());
     fullResponseBuffer.put(rpcNfsBuffer.array());
 
     return fullResponseBuffer.array();

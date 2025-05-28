@@ -20,6 +20,10 @@ public class LOOKUP3resok {
   public void serialize(ByteBuffer buffer) {
     buffer.putInt(objHandlerLength);
     buffer.put(objectHandleData);
+    int paddingBytes = (objectHandleData.length + 4 - 1) / 4 * 4 - objectHandleData.length;
+    for (int i = 0; i < paddingBytes; i++) {
+      buffer.put((byte) 0);
+    }
     buffer.putInt(objPresentFlag);
     if (objPresentFlag != 0 && fAttr3 != null) {
       fAttr3.serialize(buffer);
@@ -29,7 +33,7 @@ public class LOOKUP3resok {
     buffer.putInt(dirPresentFlag);
     if (dirPresentFlag != 0 && dirAttr3 != null) {
       dirAttr3.serialize(buffer);
-    }else {
+    } else {
       buffer.putInt(0);
     }
   }

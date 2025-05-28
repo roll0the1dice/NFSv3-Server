@@ -9,7 +9,7 @@ import java.nio.ByteBuffer;
 @Data
 @AllArgsConstructor
 @Builder
-public class LOOKUP3resfail {
+public class READDIRPLUS3resfail {
   int dirPresentFlag;
   FAttr3 dirAttributes;
 
