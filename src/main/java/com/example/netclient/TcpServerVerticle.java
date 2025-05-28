@@ -1,10 +1,11 @@
 package com.example.netclient;
 
-import com.example.netclient.enums.Nfs3Constant;
-import com.example.netclient.enums.Nfs3ErrorCode;
-import com.example.netclient.enums.Nfs3Procedure;
-import com.example.netclient.enums.RpcParseState;
-import com.example.netclient.model.ByteArrayKeyWrapper;
+import com.example.netclient.enums.*;
+import com.example.netclient.model.FSINFO3res;
+import com.example.netclient.model.FSINFO3resok;
+import com.example.netclient.utils.ByteArrayKeyWrapper;
+import com.example.netclient.utils.EnumUtil;
+import com.example.netclient.utils.RpcUtil;
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
@@ -66,9 +67,6 @@ public class TcpServerVerticle extends AbstractVerticle {
           System.out.println("Parsed Marker: last=" + isLastFragment + ", length=" + expectedFragmentLength);
 
           if (expectedFragmentLength == 0) { // 可能是心跳或空片段
-            if (isLastFragment) {
-              //processCompleteMessage(); // 处理可能为空的消息
-            }
             // 重置为读取下一个标记 (RecordParser 自动回到 fixed(4))
             parser.fixedSizeMode(4);
             currentState = RpcParseState.READING_MARKER;
@@ -370,7 +368,7 @@ public class TcpServerVerticle extends AbstractVerticle {
       // Parse NFS procedure specific data
       startOffset += 8; // Skip verifier
 
-      Nfs3Procedure procedureNumberEnum = Nfs3Procedure.fromCode(procedureNumber);
+      Nfs3Procedure procedureNumberEnum = EnumUtil.fromCode(Nfs3Procedure.class, procedureNumber);
 
       byte[] xdrReplyBytes = null;
       switch (procedureNumberEnum) {
@@ -638,14 +636,14 @@ public class TcpServerVerticle extends AbstractVerticle {
         4 + // object handle length
         fileHandleLength + // object handle data
         4 + // obj_attributes present flag
-        attrSize + // obj_attributes
+        Nfs3Constant.FILE_ATTR_SIZE + // obj_attributes
         4;
         // 不展示文件所在的目录，所以不加上目录的大小
         // + // dir_attributes present flag
         // attrSize;  // dir_attributes
     int rpcNfsErrorLength = 4 + // status
         4 + // present
-        attrSize;
+      Nfs3Constant.FILE_ATTR_SIZE;
 
     boolean isSuccess = fileHandleLength > 0;
 
@@ -710,7 +708,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     else {
       // 状态为 Error 的 RPC 报文的长度
       // Status
-      rpcNfsBuffer.putInt(Nfs3ErrorCode.NFS3ERR_NOENT.getCode());
+      rpcNfsBuffer.putInt(NfsStat3.NFS3ERR_NOENT.getCode());
 
       // Directory attributes present flag (1 = true)
       rpcNfsBuffer.putInt(1);
@@ -999,74 +997,41 @@ public class TcpServerVerticle extends AbstractVerticle {
   }
 
   private byte[] createNfsFSInfoReply(int xid) {
-    final int rpcMessageBodyLength = 24;
-    ByteBuffer rpcBodyBuffer = ByteBuffer.allocate(rpcMessageBodyLength);
-    rpcBodyBuffer.order(ByteOrder.BIG_ENDIAN);
-
-    // Standard RPC reply header
-    rpcBodyBuffer.putInt(xid);
-    rpcBodyBuffer.putInt(MSG_TYPE_REPLY);
-    rpcBodyBuffer.putInt(REPLY_STAT_MSG_ACCEPTED);
-    rpcBodyBuffer.putInt(VERF_FLAVOR_AUTH_NONE);
-    rpcBodyBuffer.putInt(VERF_LENGTH_ZERO);
-    rpcBodyBuffer.putInt(ACCEPT_STAT_SUCCESS);
+    // Standard ONC RPC reply header
+    ByteBuffer rpcHeaderBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
 
     // NFS FSINFO reply
-    // Structure:
-    // status (4 bytes)
-    // post_op_attr present flag (4 bytes)
-    // rtmax (4 bytes)
-    // rtpref (4 bytes)
-    // rtmult (4 bytes)
-    // wtmax (4 bytes)
-    // wtpref (4 bytes)
-    // wtmult (4 bytes)
-    // dtpref (4 bytes)
-    // maxfilesize (8 bytes)
-    // time_delta (8 bytes)
-    // extra field (4 bytes)
-    int rpcNfsLength = 4 + // status
-        4 + // post_op_attr present flag
-        4 + // rtmax
-        4 + // rtpref
-        4 + // rtmult
-        4 + // wtmax
-        4 + // wtpref
-        4 + // wtmult
-        4 + // dtpref
-        8 + // maxfilesize
-        8 + // time_delta
-        4;  // extra field
+    NfsStat3 status = NfsStat3.NFS3_OK;
+    FSINFO3resok fsinfo3resok = FSINFO3resok.builder()
+      .rtmax(1048576)
+      .rtpref(1048576)
+      .rtmult(4096)
+      .wtmax(1048576)
+      .wtpref(1048576)
+      .wtmult(512)
+      .dtpref(1048576)
+      .maxFilesize(0x00000FFFFFFFF000L)
+      .seconds(1)
+      .nseconds(0)
+      .extraField(0x0000001b)
+      .build();
+
+    FSINFO3res fsinfo3res = FSINFO3res.createOk(fsinfo3resok);
+
+    int rpcNfsLength = fsinfo3res.getSerializedSize();
 
     ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
     rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
 
-    // Status (NFS_OK = 0)
-    rpcNfsBuffer.putInt(0);
-
-    // post_op_attr
-    rpcNfsBuffer.putInt(0); // present = false
-
-    // FSINFO specific fields
-    rpcNfsBuffer.putInt(1048576);  // rtmax (1MB)
-    rpcNfsBuffer.putInt(1048576);  // rtpref (1MB)
-    rpcNfsBuffer.putInt(4096);     // rtmult (4KB)
-    rpcNfsBuffer.putInt(1048576);  // wtmax (1MB)
-    rpcNfsBuffer.putInt(1048576);  // wtpref (1MB)
-    rpcNfsBuffer.putInt(512);      // wtmult (512 bytes)
-    rpcNfsBuffer.putInt(1048576);  // dtpref (1MB)
-    rpcNfsBuffer.putLong(0x00000FFFFFFFF000L);  // maxfilesize
-    rpcNfsBuffer.putInt(1);        // time_delta (seconds)
-    rpcNfsBuffer.putInt(0);        // time_delta (nseconds)
-    rpcNfsBuffer.putInt(0x0000001b);        // extra field
+    fsinfo3res.serialize(rpcNfsBuffer);
 
     // Record marking
-    int recordMarkValue = 0x80000000 | (rpcMessageBodyLength + rpcNfsLength);
+    int recordMarkValue = 0x80000000 | (RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH + rpcNfsLength);
 
-    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcMessageBodyLength + rpcNfsLength);
+    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH + rpcNfsLength);
     fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
     fullResponseBuffer.putInt(recordMarkValue);
-    fullResponseBuffer.put(rpcBodyBuffer.array());
+    fullResponseBuffer.put(rpcHeaderBuffer.array());
     fullResponseBuffer.put(rpcNfsBuffer.array());
 
     return fullResponseBuffer.array();

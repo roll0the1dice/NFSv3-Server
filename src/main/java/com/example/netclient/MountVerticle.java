@@ -4,6 +4,7 @@ import com.example.netclient.enums.RpcReplyMessage;
 import com.example.netclient.enums.MountProcedure;
 import com.example.netclient.enums.MountStatus;
 import com.example.netclient.enums.RpcParseState;
+import com.example.netclient.utils.EnumUtil;
 import com.example.netclient.utils.NetTool;
 import io.vertx.core.*;
 import io.vertx.core.buffer.Buffer;
@@ -172,7 +173,7 @@ public class MountVerticle extends AbstractVerticle {
       return;
     }
 
-    MountProcedure procedureNumberEnum = MountProcedure.fromCode(procedureNumber);
+    MountProcedure procedureNumberEnum = EnumUtil.fromCode(MountProcedure.class, procedureNumber);
 
     byte[] xdrReplyBytes = null;
     try {

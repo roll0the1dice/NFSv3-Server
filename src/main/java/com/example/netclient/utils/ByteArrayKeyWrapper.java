@@ -1,6 +1,4 @@
-package com.example.netclient.model;
-
-import com.example.netclient.utils.NetTool;
+package com.example.netclient.utils;
 
 import java.util.Arrays;
 import java.util.Objects;

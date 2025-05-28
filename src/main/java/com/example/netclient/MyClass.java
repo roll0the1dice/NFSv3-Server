@@ -1,5 +1,7 @@
 package com.example.netclient;
 
+import com.example.netclient.model.FSINFO3resok;
+
 import java.util.HashMap;
 import java.util.Map;
 
@@ -42,12 +44,16 @@ public class MyClass {
   }
 
   public static void main(String[] args) {
-    System.out.println("Main method started.");
-    MyClass.staticMethod(); // 触发类加载 (如果尚未加载)
-    System.out.println("Static var: " + MyClass.staticVar);
-    System.out.println("---");
-    MyClass obj1 = new MyClass(); // 触发类加载 (如果尚未加载)
-    MyClass obj2 = new MyClass();
-    System.out.println("Main method finished.");
+//    System.out.println("Main method started.");
+//    MyClass.staticMethod(); // 触发类加载 (如果尚未加载)
+//    System.out.println("Static var: " + MyClass.staticVar);
+//    System.out.println("---");
+//    MyClass obj1 = new MyClass(); // 触发类加载 (如果尚未加载)
+//    MyClass obj2 = new MyClass();
+//    System.out.println("Main method finished.");
+    FSINFO3resok fsinfo3resok = FSINFO3resok.builder().build();
+
+    System.out.println(fsinfo3resok);
+
   }
 }

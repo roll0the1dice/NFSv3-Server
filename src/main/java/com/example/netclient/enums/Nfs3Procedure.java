@@ -1,9 +1,13 @@
 package com.example.netclient.enums;
 
-import java.util.HashMap;
-import java.util.Map;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import lombok.ToString;
 
-public enum Nfs3Procedure {
+@Getter
+@AllArgsConstructor
+@ToString(of = "desc")
+public enum Nfs3Procedure implements BaseEnum {
   NFSPROC_NULL(0, "NFSPROC_NULL"),
   NFSPROC_GETATTR(1, "NFSPROC_GETATTR"),
   NFSPROC_SETATTR(2, "NFSPROC_SETATTR"),
@@ -30,38 +34,4 @@ public enum Nfs3Procedure {
 
   private int code;
   private String desc;
-
-  Nfs3Procedure(int code, String desc) {
-    this.code = code;
-    this.desc = desc;
-  }
-
-  public int getCode() {
-    return code;
-  }
-
-  public String getDesc() {
-    return desc;
-  }
-
-  private static final Map<Integer, Nfs3Procedure> map = new HashMap<>();
-
-  static {
-    for (Nfs3Procedure nfs3Procedure : Nfs3Procedure.values()) {
-      map.put(nfs3Procedure.code, nfs3Procedure);
-    }
-  }
-
-  public static Nfs3Procedure fromCode(int code) {
-    Nfs3Procedure nfs3Procedure = map.get(code);
-    if (nfs3Procedure == null) {
-      throw new IllegalArgumentException("Unknown code: " + code);
-    }
-    return nfs3Procedure;
-  }
-
-  @Override
-  public String toString() {
-    return name() + "(" + code + ")" + desc;
-  }
 }
