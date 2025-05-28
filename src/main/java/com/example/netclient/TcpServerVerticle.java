@@ -1,8 +1,7 @@
 package com.example.netclient;
 
 import com.example.netclient.enums.*;
-import com.example.netclient.model.FSINFO3res;
-import com.example.netclient.model.FSINFO3resok;
+import com.example.netclient.model.*;
 import com.example.netclient.utils.ByteArrayKeyWrapper;
 import com.example.netclient.utils.EnumUtil;
 import com.example.netclient.utils.RpcUtil;
@@ -592,17 +591,8 @@ public class TcpServerVerticle extends AbstractVerticle {
     log.info("LOOKUP request - directory handle length: {}, name: {}", dirFhandleLength, name);
 
     // Create reply
-    final int rpcMessageBodyLength = 24;
-    ByteBuffer rpcBodyBuffer = ByteBuffer.allocate(rpcMessageBodyLength);
-    rpcBodyBuffer.order(ByteOrder.BIG_ENDIAN);
-
-    // Standard RPC reply header
-    rpcBodyBuffer.putInt(xid);
-    rpcBodyBuffer.putInt(MSG_TYPE_REPLY);
-    rpcBodyBuffer.putInt(REPLY_STAT_MSG_ACCEPTED);
-    rpcBodyBuffer.putInt(VERF_FLAVOR_AUTH_NONE);
-    rpcBodyBuffer.putInt(VERF_LENGTH_ZERO);
-    rpcBodyBuffer.putInt(ACCEPT_STAT_SUCCESS);
+    int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
+    ByteBuffer rpcHeaderBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
 
     // Calculate size for attributes
     int attrSize =
@@ -645,107 +635,88 @@ public class TcpServerVerticle extends AbstractVerticle {
         4 + // present
       Nfs3Constant.FILE_ATTR_SIZE;
 
-    boolean isSuccess = fileHandleLength > 0;
-
-    int rpcNfsLength = isSuccess ? rpcNfsOKLength : rpcNfsErrorLength;
-
-    ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
-    rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
-
     // Current time in seconds and nanoseconds
     long currentTimeMillis = System.currentTimeMillis();
     int seconds = (int) (currentTimeMillis / 1000);
     int nseconds = (int) ((currentTimeMillis % 1000) * 1_000_000);
 
-    if (isSuccess) {
-      // Status (NFS_OK = 0)
-      rpcNfsBuffer.putInt(0);
-
-      // Object handle
-      rpcNfsBuffer.putInt(fileHandleLength); // handle length
-      rpcNfsBuffer.put(fileHandle); // handle data
-
-      // Object attributes present flag (1 = true)
-      rpcNfsBuffer.putInt(1);
-
-      // Object attributes
-      // Determine file type based on name
+    LOOKUP3res lookup3res = null;
+    if (fileHandleLength > 0) {
       int fileType;
       fileType = getFileType(name);
-
-      rpcNfsBuffer.putInt(fileType);  // type
-      rpcNfsBuffer.putInt(fileType == 2 ? 0x000001ED : 0x000001ED); // mode (rwxr-xr-x for dir, rw-r--r-- for file)
-      rpcNfsBuffer.putInt(1);  // nlink
-      rpcNfsBuffer.putInt(0);  // uid (root)
-      rpcNfsBuffer.putInt(0);  // gid (root)
-      rpcNfsBuffer.putLong(4096);  // size
-      rpcNfsBuffer.putLong(4096);  // used
-      rpcNfsBuffer.putLong(0);  // rdev
-      rpcNfsBuffer.putInt(0x08c60040);  // fsid (major)
-      rpcNfsBuffer.putInt(0x2b5cd8a8);  // fsid (minor)
-
       long fileId = getFileId(name);
-      // lookup查找到的fileid的值一定要和acess返回的值一样
-      // 要不然会有非常奇怪的错误
-      // e.g.
-      // $ cat /mnt/mynfs/test.txt
-      // cat: /mnt/mynfs/test.txt: Stale file handle
-      //rpcNfsBuffer.putLong(0x0000000002000002L);
-      rpcNfsBuffer.putLong(fileId); // fileid (unique for each file)
 
-      // atime
-      rpcNfsBuffer.putInt(seconds);  // atime (seconds)
-      rpcNfsBuffer.putInt(nseconds);  // atime (nseconds)
+      FAttr3 fAttr3 = FAttr3.builder()
+        .type(fileType)
+        .mode(0x000001ED)
+        .nlink(1)
+        .uid(0)
+        .gid(0)
+        .size(4096)
+        .used(4096)
+        .rdev(0)
+        .fsidMajor(0x08c60040)
+        .fsidMinor(0x2b5cd8a8)
+        .fileid(fileId)
+        .atimeSeconds(seconds)
+        .atimeNseconds(nseconds)
+        .mtimeSeconds(seconds)
+        .mtimeNseconds(nseconds)
+        .ctimeSeconds(seconds)
+        .ctimeNseconds(nseconds)
+        .build();
 
-      // mtime
-      rpcNfsBuffer.putInt(seconds);  // mtime (seconds)
-      rpcNfsBuffer.putInt(nseconds);  // mtime (nseconds)
+      LOOKUP3resok lookup3resok = LOOKUP3resok.builder()
+        .objHandlerLength(fileHandleLength)
+        .objectHandleData(fileHandle)
+        .objPresentFlag(1)
+        .fAttr3(fAttr3)
+        .dirPresentFlag(0)
+        .build();
 
-      // ctime
-      rpcNfsBuffer.putInt(seconds);  // ctime (seconds)
-      rpcNfsBuffer.putInt(nseconds);  // ctime (nseconds)
+      lookup3res = LOOKUP3res.createOk(lookup3resok);
+    } else {
+      FAttr3 dirAttr3 = FAttr3.builder()
+        .type(2)
+        .mode(0x000001ED)
+        .nlink(1)
+        .uid(0)
+        .gid(0)
+        .size(4096)
+        .used(4096)
+        .rdev(0)
+        .fsidMajor(0x08c60040)
+        .fsidMinor(0x2b5cd8a8)
+        .fileid(0x0000000002000002L)
+        .atimeSeconds(seconds)
+        .atimeNseconds(nseconds)
+        .mtimeSeconds(seconds)
+        .mtimeNseconds(nseconds)
+        .ctimeSeconds(seconds)
+        .ctimeNseconds(nseconds)
+        .build();
+
+      LOOKUP3resfail lookup3resfail = LOOKUP3resfail.builder()
+          .dirPresentFlag(1)
+          .dirAttributes(dirAttr3)
+          .build();
+      lookup3res = LOOKUP3res.createFail(NfsStat3.NFS3ERR_NOENT, lookup3resfail);
     }
-    else {
-      // 状态为 Error 的 RPC 报文的长度
-      // Status
-      rpcNfsBuffer.putInt(NfsStat3.NFS3ERR_NOENT.getCode());
 
-      // Directory attributes present flag (1 = true)
-      rpcNfsBuffer.putInt(1);
+    int rpcNfsLength = lookup3res.getSerializedSize();
 
-      // Directory attributes
-      rpcNfsBuffer.putInt(2);  // type (NF3DIR = 2, directory)
-      rpcNfsBuffer.putInt(0x000001ED); // mode (rwxr-xr-x)
-      rpcNfsBuffer.putInt(1);  // nlink
-      rpcNfsBuffer.putInt(0);  // uid (root)
-      rpcNfsBuffer.putInt(0);  // gid (root)
-      rpcNfsBuffer.putLong(4096);  // size (4KB)
-      rpcNfsBuffer.putLong(4096);  // used (4KB)
-      rpcNfsBuffer.putLong(0);  // rdev (0 for directories)
-      rpcNfsBuffer.putInt(0x08c60040);  // fsid (major)
-      rpcNfsBuffer.putInt(0x2b5cd8a8);  // fsid (minor)
-      rpcNfsBuffer.putLong(0x0000000002000002L);  // fileid
+    ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
+    rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
 
-      // atime
-      rpcNfsBuffer.putInt(seconds);  // atime (seconds)
-      rpcNfsBuffer.putInt(nseconds);  // atime (nseconds)
-
-      // mtime
-      rpcNfsBuffer.putInt(seconds);  // mtime (seconds)
-      rpcNfsBuffer.putInt(nseconds);  // mtime (nseconds)
-
-      // ctime
-      rpcNfsBuffer.putInt(seconds);  // ctime (seconds)
-      rpcNfsBuffer.putInt(nseconds);  // ctime (nseconds)
-    }
+    lookup3res.serialize(rpcNfsBuffer);
 
       // Record marking
-      int recordMarkValue = 0x80000000 | (rpcMessageBodyLength + rpcNfsLength);
+      int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
 
-      ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcMessageBodyLength + rpcNfsLength);
+      ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcHeaderLength + rpcNfsLength);
       fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
       fullResponseBuffer.putInt(recordMarkValue);
-      fullResponseBuffer.put(rpcBodyBuffer.array());
+      fullResponseBuffer.put(rpcHeaderBuffer.array());
       fullResponseBuffer.put(rpcNfsBuffer.array());
 
       return fullResponseBuffer.array();

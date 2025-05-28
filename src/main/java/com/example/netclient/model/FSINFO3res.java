@@ -41,12 +41,14 @@ public class FSINFO3res  {
   }
 
   public void serialize(ByteBuffer buffer) {
-    if (resok == null) {
-      throw new IllegalArgumentException("resok must be null when status is not NFS3_OK");
-    }
+    if (status == NfsStat3.NFS3_OK) {
+      if (resok == null) {
+        throw new IllegalArgumentException("resok must be null when status is not NFS3_OK");
+      }
 
-    buffer.putInt(status.getCode());
-    resok.serialize(buffer);
+      buffer.putInt(status.getCode());
+      resok.serialize(buffer);
+    }
   }
 
   public int getSerializedSize() {
