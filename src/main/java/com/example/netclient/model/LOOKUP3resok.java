@@ -9,12 +9,13 @@ import java.nio.ByteBuffer;
 @Data
 @AllArgsConstructor
 @Builder
-public class LOOKUP3resok {
+public class LOOKUP3resok implements SerializablePayload {
   int objHandlerLength; // object handle length
   byte[] objectHandleData; // object handle data
   PostOpAttr objAttributes;
   PostOpAttr dirAttributes;
 
+  @Override
   public void serialize(ByteBuffer buffer) {
     buffer.putInt(objHandlerLength);
     buffer.put(objectHandleData);
@@ -26,6 +27,7 @@ public class LOOKUP3resok {
     dirAttributes.serialize(buffer);
   }
 
+  @Override
   public int getSerializedSize() {
     return 4 + // object handle length
       (objHandlerLength + 4 - 1) / 4 * 4 + // object handle

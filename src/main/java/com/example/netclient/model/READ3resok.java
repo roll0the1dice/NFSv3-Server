@@ -9,13 +9,14 @@ import java.nio.ByteBuffer;
 @Data
 @AllArgsConstructor
 @Builder
-public class READ3resok {
+public class READ3resok implements SerializablePayload {
   PostOpAttr fileAttributes;
   int count;
   int eof;
   int dataOfLength;
   byte[] data;
 
+  @Override
   public void serialize(ByteBuffer buffer) {
     fileAttributes.serialize(buffer);
     buffer.putInt(count);
@@ -26,9 +27,10 @@ public class READ3resok {
     for (int i = 0; i < padding; i++) buffer.put((byte) 0);
   }
 
+  @Override
   public int getSerializedSize() {
     return 4 + // object handle length
-      FAttr3.getSerializedSize() + // rtmax
+      fileAttributes.getSerializedSize() + // rtmax
       4 + // count
       4 + // eof
       4 + // dataOfLength

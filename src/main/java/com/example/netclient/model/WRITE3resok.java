@@ -9,7 +9,7 @@ import java.nio.ByteBuffer;
 @Data
 @AllArgsConstructor
 @Builder
-public class WRITE3resok {
+public class WRITE3resok implements SerializablePayload {
   public enum StableHow {
     UNSTABLE,
     DATA_SYNC,
@@ -21,6 +21,7 @@ public class WRITE3resok {
   StableHow committed;
   long verifier;
 
+  @Override
   public void serialize(ByteBuffer buffer) {
     fileWcc.serialize(buffer);
     buffer.putInt(count);
@@ -28,6 +29,7 @@ public class WRITE3resok {
     buffer.putLong(verifier);
   }
 
+  @Override
   public int getSerializedSize() {
     return fileWcc.getSerializedSize() + 16;
   }

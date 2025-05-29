@@ -4,13 +4,14 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 
+import java.io.Serializable;
 import java.nio.ByteBuffer;
 
 
 @Data
 @AllArgsConstructor
 @Builder
-public class Entryplus3 {
+public class Entryplus3 implements SerializablePayload {
   long fileid;
   int fileNameLength;
   byte[] fileName;
@@ -22,6 +23,7 @@ public class Entryplus3 {
   byte[] nameHandle;
   int nextEntryPresent;
 
+  @Override
   public void serialize(ByteBuffer buffer) {
     buffer.putLong(fileid);
     buffer.putInt(fileNameLength);
@@ -47,6 +49,7 @@ public class Entryplus3 {
     buffer.putInt(nextEntryPresent);
   }
 
+  @Override
   public int getSerializedSize() {
     // obj Present Flag
     return 8 + // fileid
@@ -54,7 +57,7 @@ public class Entryplus3 {
       ((fileNameLength + 3) & ~3) + // name (padded to 4 bytes)
       8 + // cookie
       4 + // name_attributes present flag
-      FAttr3.getSerializedSize() + // name_attributes
+      nameAttr.getSerializedSize() + // name_attributes
       4 + // handle present
       4 + // handle length
       ((nameHandleLength + 3) & ~3) + // handle data

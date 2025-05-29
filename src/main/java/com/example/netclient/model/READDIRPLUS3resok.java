@@ -11,13 +11,14 @@ import java.util.List;
 @Data
 @AllArgsConstructor
 @Builder
-public class READDIRPLUS3resok {
+public class READDIRPLUS3resok implements SerializablePayload {
   PostOpAttr dirAttributes;
   long cookieverf;
   int entriesPresentFlag;
   List<Entryplus3> entries;
   int eof;
 
+  @Override
   public void serialize(ByteBuffer buffer) {
     dirAttributes.serialize(buffer);
     buffer.putLong(cookieverf);
@@ -28,6 +29,7 @@ public class READDIRPLUS3resok {
     buffer.putInt(eof);
   }
 
+  @Override
   public int getSerializedSize() {
     int totalEntriesSize = entries != null && entries.isEmpty() ? 4 : entries.stream().map(entryplus3 -> entryplus3.getSerializedSize()).reduce(0, Integer::sum);
 

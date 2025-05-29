@@ -8,10 +8,11 @@ import java.nio.ByteBuffer;
 @Data
 @AllArgsConstructor
 @Builder
-public class PostOpAttr {
+public class PostOpAttr implements SerializablePayload {
   int attributesFollow; // present flag
   FAttr3 attributes;
 
+  @Override
   public void serialize(ByteBuffer buffer) {
     buffer.putInt(attributesFollow);
     if (attributesFollow != 0 && attributes != null) {
@@ -19,9 +20,10 @@ public class PostOpAttr {
     }
   }
 
+  @Override
   public int getSerializedSize() {
     // obj Present Flag
-    int t = attributesFollow != 0 ? FAttr3.getSerializedSize() : 0;
+    int t = attributesFollow != 0 ? attributes.getSerializedSize() : 0;
     return 4 + t;
   }
 }

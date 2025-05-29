@@ -4,15 +4,17 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 
+import java.io.Serializable;
 import java.nio.ByteBuffer;
 
 @Data
 @AllArgsConstructor
 @Builder
-public class PreOpAttr {
+public class PreOpAttr implements SerializablePayload {
   int attributesFollow; // present flag
   WccAttr attributes;
 
+  @Override
   public void serialize(ByteBuffer buffer) {
     buffer.putInt(attributesFollow);
     if (attributesFollow != 0 && attributes != null) {
@@ -20,9 +22,10 @@ public class PreOpAttr {
     }
   }
 
+  @Override
   public int getSerializedSize() {
     // obj Present Flag
-    int t = attributesFollow != 0 ? FAttr3.getSerializedSize() : 0;
+    int t = attributesFollow != 0 ? attributes.getSerializedSize() : 0;
     return 4 + t;
   }
 }

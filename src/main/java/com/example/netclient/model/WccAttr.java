@@ -4,6 +4,7 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 
+import java.io.Serializable;
 import java.nio.ByteBuffer;
 
 /**
@@ -14,13 +15,14 @@ import java.nio.ByteBuffer;
 @Data
 @AllArgsConstructor
 @Builder
-public class WccAttr {
+public class WccAttr implements SerializablePayload {
   long size;
   int mtimeSeconds;
   int mtimeNSeconds;
   int ctimeSeconds;
   int ctimeNSeconds;
 
+  @Override
   public void serialize(ByteBuffer buffer) {
     buffer.putLong(size);
     buffer.putInt(mtimeSeconds);
@@ -29,7 +31,8 @@ public class WccAttr {
     buffer.putInt(ctimeNSeconds);
   }
 
-  public static int getSerializedSize() {
+  @Override
+  public int getSerializedSize() {
     return 24;
   }
 }

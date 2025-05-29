@@ -1,28 +1,26 @@
 package com.example.netclient.model;
 
-import com.example.netclient.enums.Nfs3Constant;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 
-import java.io.Serializable;
 import java.nio.ByteBuffer;
 
 @Data
 @AllArgsConstructor
 @Builder
-public class NfsTime3 implements SerializablePayload {
-  int seconds;
-  int nseconds;
+public class COMMIT3resok implements SerializablePayload {
+  WccData fileWcc;
+  long verifier;
 
   @Override
   public void serialize(ByteBuffer buffer) {
-    buffer.putInt(seconds);
-    buffer.putInt(nseconds);
+    fileWcc.serialize(buffer);
+    buffer.putLong(verifier);
   }
 
   @Override
   public int getSerializedSize() {
-    return 8;
+    return fileWcc.getSerializedSize() + 8;
   }
 }

@@ -5,12 +5,13 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 
+import java.io.Serializable;
 import java.nio.ByteBuffer;
 
 @Data
 @AllArgsConstructor
 @Builder
-public class FAttr3 {
+public class FAttr3 implements SerializablePayload {
   int type;
   int mode;
   int nlink;
@@ -29,6 +30,7 @@ public class FAttr3 {
   int ctimeSeconds;
   int ctimeNseconds;
 
+  @Override
   public void serialize(ByteBuffer buffer) {
     buffer.putInt(type);
     buffer.putInt(mode);
@@ -49,7 +51,8 @@ public class FAttr3 {
     buffer.putInt(ctimeNseconds);
   }
 
-  public static int getSerializedSize() {
+  @Override
+  public int getSerializedSize() {
     return Nfs3Constant.FILE_ATTR_SIZE;
   }
 

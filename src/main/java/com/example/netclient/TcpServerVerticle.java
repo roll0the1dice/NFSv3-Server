@@ -15,6 +15,7 @@ import io.vertx.core.net.NetSocket;
 import io.vertx.reactivex.core.parsetools.RecordParser;
 import lombok.extern.slf4j.Slf4j;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -1441,19 +1442,10 @@ public class TcpServerVerticle extends AbstractVerticle {
     return fullResponseBuffer.array();
   }
 
-  private byte[] createNfsCommitReply(int xid, Buffer request, int startOffset) {
+  private byte[] createNfsCommitReply(int xid, Buffer request, int startOffset) throws IOException {
     // Create reply
-    final int rpcMessageBodyLength = 24;
-    ByteBuffer rpcBodyBuffer = ByteBuffer.allocate(rpcMessageBodyLength);
-    rpcBodyBuffer.order(ByteOrder.BIG_ENDIAN);
-
-    // Standard RPC reply header
-    rpcBodyBuffer.putInt(xid);
-    rpcBodyBuffer.putInt(MSG_TYPE_REPLY);
-    rpcBodyBuffer.putInt(REPLY_STAT_MSG_ACCEPTED);
-    rpcBodyBuffer.putInt(VERF_FLAVOR_AUTH_NONE);
-    rpcBodyBuffer.putInt(VERF_LENGTH_ZERO);
-    rpcBodyBuffer.putInt(ACCEPT_STAT_SUCCESS);
+    final int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
+    ByteBuffer rpcHeaderBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
 
     // NFS COMMIT reply
     // Structure:
@@ -1462,31 +1454,45 @@ public class TcpServerVerticle extends AbstractVerticle {
     // wcc_data
     //   pre_op_attr present flag (4 bytes)
     //   post_op_attr present flag (4 bytes)
-    int rpcNfsLength = 4 + // status
-        8 + // verf
-        4 + // pre_op_attr present flag
-        4;  // post_op_attr present flag
+//    int rpcNfsLength = 4 + // status
+//        8 + // verf
+//        4 + // pre_op_attr present flag
+//        4;  // post_op_attr present flag
+    PreOpAttr befor = PreOpAttr.builder().attributesFollow(0).build();
+    PostOpAttr after = PostOpAttr.builder().attributesFollow(0).build();
 
+    WccData fileWcc =  WccData.builder()
+      .before(befor)
+      .after(after)
+      .build();
+    COMMIT3resok commit3resok = COMMIT3resok.builder()
+      .fileWcc(fileWcc)
+      .verifier(0L)
+      .build();
+
+    COMMIT3res commit3res = COMMIT3res.createSuccess(commit3resok);
+    int rpcNfsLength = commit3res.getSerializedSize();
     ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
     rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
+    commit3res.serialize(rpcNfsBuffer);
 
-    // Status (NFS_OK = 0)
-    rpcNfsBuffer.putInt(0);
-
-    // verf
-    rpcNfsBuffer.putLong(0); // write verifier
-
-    // wcc_data
-    rpcNfsBuffer.putInt(0); // pre_op_attr present = false
-    rpcNfsBuffer.putInt(0); // post_op_attr present = false
+//    // Status (NFS_OK = 0)
+//    rpcNfsBuffer.putInt(0);
+//
+//    // verf
+//    rpcNfsBuffer.putLong(0); // write verifier
+//
+//    // wcc_data
+//    rpcNfsBuffer.putInt(0); // pre_op_attr present = false
+//    rpcNfsBuffer.putInt(0); // post_op_attr present = false
 
     // Record marking
-    int recordMarkValue = 0x80000000 | (rpcMessageBodyLength + rpcNfsLength);
+    int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
 
-    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcMessageBodyLength + rpcNfsLength);
+    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcHeaderLength + rpcNfsLength);
     fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
     fullResponseBuffer.putInt(recordMarkValue);
-    fullResponseBuffer.put(rpcBodyBuffer.array());
+    fullResponseBuffer.put(rpcHeaderBuffer.array());
     fullResponseBuffer.put(rpcNfsBuffer.array());
 
     return fullResponseBuffer.array();
