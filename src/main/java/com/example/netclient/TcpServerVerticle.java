@@ -778,88 +778,114 @@ public class TcpServerVerticle extends AbstractVerticle {
     int count = request.getInt(startOffset + 4 + fhandleLength + 8);
 
     // Create reply
-    final int rpcMessageBodyLength = 24;
-    ByteBuffer rpcBodyBuffer = ByteBuffer.allocate(rpcMessageBodyLength);
-    rpcBodyBuffer.order(ByteOrder.BIG_ENDIAN);
+    final int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
+    ByteBuffer rpcBodyBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
 
-    // Standard RPC reply header
-    rpcBodyBuffer.putInt(xid);
-    rpcBodyBuffer.putInt(MSG_TYPE_REPLY);
-    rpcBodyBuffer.putInt(REPLY_STAT_MSG_ACCEPTED);
-    rpcBodyBuffer.putInt(VERF_FLAVOR_AUTH_NONE);
-    rpcBodyBuffer.putInt(VERF_LENGTH_ZERO);
-    rpcBodyBuffer.putInt(ACCEPT_STAT_SUCCESS);
+//    // NFS READ reply
+//    int rpcNfsLength = 4 + // NFS3_OK
+//      4 + // post_op_attr present flag
+//      Nfs3Constant.FILE_ATTR_SIZE + // file_attributes
+//      4 + // bytes_read
+//      4 + // eof
+//      4 + // data of length
+//      (dataLength + 4 -1 ) / 4 * 4; // data
 
-    byte[] payload = "hello,world\n".getBytes(StandardCharsets.UTF_8);
-    int dataLength = payload.length;
 
-    // NFS READ reply
-    int rpcNfsLength = 4 + // NFS3_OK
-      4 + // post_op_attr present flag
-      Nfs3Constant.FILE_ATTR_SIZE + // file_attributes
-      4 + // bytes_read
-      4 + // eof
-      4 + // data of length
-      (dataLength + 4 -1 ) / 4 * 4; // data
-
-    ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
-    rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
 
     // Status (NFS_OK = 0)
-    rpcNfsBuffer.putInt(0);
+    //rpcNfsBuffer.putInt(0);
 
     long fileId = fileHandleToFileId.getOrDefault(new ByteArrayKeyWrapper(fhandle), 0x0000000002000002L);
     String filename = fileIdToFileName.getOrDefault(fileId, "/");
-    // File attributes
     int fileType =  getFileType(filename);
+    byte[] payload = "hello,world\n".getBytes(StandardCharsets.UTF_8);
+    int dataLength = payload.length;
 
-    // present
-    rpcNfsBuffer.putInt(1);
-    // Attributes
-    // type (NF3REG = 1)
-    rpcNfsBuffer.putInt(fileType);
-    // mode (0644)
-    rpcNfsBuffer.putInt(0755);
-    // nlink
-    rpcNfsBuffer.putInt(2);
-    // uid
-    rpcNfsBuffer.putInt(0);
-    // gid
-    rpcNfsBuffer.putInt(0);
-    // size
-    rpcNfsBuffer.putLong(4096);
-    // used
-    rpcNfsBuffer.putLong(4096);
-    // rdev
-    rpcNfsBuffer.putLong(0);
-    // fsid
-    rpcNfsBuffer.putInt(0x08c60040);  // fsid (major)
-    rpcNfsBuffer.putInt(0x2b5cd8a8);  // fsid (minor)
-    // fileid
-    rpcNfsBuffer.putLong(fileId);
-    // atime
-    rpcNfsBuffer.putInt((int)(System.currentTimeMillis() / 1000));
-    rpcNfsBuffer.putInt(0);
-    // mtime
-    rpcNfsBuffer.putInt((int)(System.currentTimeMillis() / 1000));
-    rpcNfsBuffer.putInt(0);
-    // ctime
-    rpcNfsBuffer.putInt((int)(System.currentTimeMillis() / 1000));
-    rpcNfsBuffer.putInt(0);
+    int seconds = (int)(System.currentTimeMillis() / 1000);
 
-    // count
-    rpcNfsBuffer.putInt(dataLength);
-    // eof
-    rpcNfsBuffer.putInt(1);
-    // data of length
-    rpcNfsBuffer.putInt(dataLength);
-    // data
-    rpcNfsBuffer.put(payload);
+    FAttr3 fAttr3 = FAttr3.builder()
+      .type(fileType)
+      .mode(0755)
+      .nlink(1)
+      .uid(0)
+      .gid(0)
+      .size(4096)
+      .used(4096)
+      .rdev(0)
+      .fsidMajor(0x08c60040)
+      .fsidMinor(0x2b5cd8a8)
+      .fileid(fileId)
+      .atimeSeconds(seconds)
+      .atimeNseconds(0)
+      .mtimeSeconds(seconds)
+      .mtimeNseconds(0)
+      .ctimeSeconds(seconds)
+      .ctimeNseconds(0)
+      .build();
+
+    READ3resok read3resok = READ3resok.builder()
+      .filePresentFlag(1)
+      .fAttr3(fAttr3)
+      .count(dataLength)
+      .eof(1)
+      .dataOfLength(dataLength)
+      .data(payload)
+      .build();
+
+    READ3res read3res = READ3res.createOk(read3resok);
+
+    int rpcNfsLength = read3res.getSerializedSize();
+    ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
+    rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
+    read3res.serialize(rpcNfsBuffer);
+
+//    // present
+//    rpcNfsBuffer.putInt(1);
+//    // Attributes
+//    // type (NF3REG = 1)
+//    rpcNfsBuffer.putInt(fileType);
+//    // mode (0644)
+//    rpcNfsBuffer.putInt(0755);
+//    // nlink
+//    rpcNfsBuffer.putInt(2);
+//    // uid
+//    rpcNfsBuffer.putInt(0);
+//    // gid
+//    rpcNfsBuffer.putInt(0);
+//    // size
+//    rpcNfsBuffer.putLong(4096);
+//    // used
+//    rpcNfsBuffer.putLong(4096);
+//    // rdev
+//    rpcNfsBuffer.putLong(0);
+//    // fsid
+//    rpcNfsBuffer.putInt(0x08c60040);  // fsid (major)
+//    rpcNfsBuffer.putInt(0x2b5cd8a8);  // fsid (minor)
+//    // fileid
+//    rpcNfsBuffer.putLong(fileId);
+//    // atime
+//    rpcNfsBuffer.putInt((int)(System.currentTimeMillis() / 1000));
+//    rpcNfsBuffer.putInt(0);
+//    // mtime
+//    rpcNfsBuffer.putInt((int)(System.currentTimeMillis() / 1000));
+//    rpcNfsBuffer.putInt(0);
+//    // ctime
+//    rpcNfsBuffer.putInt((int)(System.currentTimeMillis() / 1000));
+//    rpcNfsBuffer.putInt(0);
+//
+//    // count
+//    rpcNfsBuffer.putInt(dataLength);
+//    // eof
+//    rpcNfsBuffer.putInt(1);
+//    // data of length
+//    rpcNfsBuffer.putInt(dataLength);
+//    // data
+//    rpcNfsBuffer.put(payload);
 
     // Record marking
-    int recordMarkValue = 0x80000000 | (rpcMessageBodyLength + rpcNfsLength);
+    int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
 
-    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcMessageBodyLength + rpcNfsLength);
+    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcHeaderLength + rpcNfsLength);
     fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
     fullResponseBuffer.putInt(recordMarkValue);
     fullResponseBuffer.put(rpcBodyBuffer.array());
