@@ -5,6 +5,7 @@ import com.example.netclient.model.*;
 import com.example.netclient.model.acl.*;
 import com.example.netclient.utils.ByteArrayKeyWrapper;
 import com.example.netclient.utils.EnumUtil;
+import com.example.netclient.utils.NetTool;
 import com.example.netclient.utils.RpcUtil;
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.Promise;
@@ -15,8 +16,10 @@ import io.vertx.core.net.NetServerOptions;
 import io.vertx.core.net.NetSocket;
 import io.vertx.reactivex.core.parsetools.RecordParser;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.codec.DecoderException;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -56,6 +59,9 @@ public class TcpServerVerticle extends AbstractVerticle {
   private static Map<ByteArrayKeyWrapper, Long> fileHandleToFileId = new ConcurrentHashMap<>();
   private static Map<ByteArrayKeyWrapper, String> fileHandleToFileName = new ConcurrentHashMap<>();
   private static Map<Long, String> fileIdToFileName = new ConcurrentHashMap<>();
+  private static Map<Long, FAttr3> fileIdToFAttr3 = new ConcurrentHashMap<>();
+  private static Map<ByteArrayKeyWrapper, FAttr3> fileHandleToFAttr3 = new ConcurrentHashMap<>();
+  private static Map<ByteArrayKeyWrapper, ByteArrayKeyWrapper> fileHandleToParentFileHandle = new ConcurrentHashMap<>();
 
   @Override
   public void start(Promise<Void> startPromise) throws Exception {
@@ -133,8 +139,41 @@ public class TcpServerVerticle extends AbstractVerticle {
       vertx.close();
     });
 
+    init();
+
     // 也可以直接指定端口和主机，而不使用 NetServerOptions
     // server.listen(PORT, HOST, res -> { /* ... */ });
+  }
+
+  private void init() throws DecoderException {
+    // Current time in seconds and nanoseconds
+    long currentTimeMillis = System.currentTimeMillis();
+    int seconds = (int)(currentTimeMillis / 1000);
+    int nseconds = (int)((currentTimeMillis % 1000) * 1_000_000);
+    FAttr3 objAttributes = FAttr3.builder()
+      .type(2)
+      .mode(0755)
+      .nlink(1)
+      .uid(0)
+      .gid(0)
+      .size(4096)
+      .used(4096)
+      .rdev(0)
+      .fsidMajor(0x08c60040)
+      .fsidMinor(0x2b5cd8a8)
+      .fileid(33554434)
+      .atimeSeconds(seconds)
+      .atimeNseconds(nseconds)
+      .mtimeSeconds(seconds)
+      .mtimeNseconds(nseconds)
+      .ctimeSeconds(seconds)
+      .ctimeNseconds(nseconds)
+      .build();
+
+    String dataLiteral = "0100070002000002000000003e3e7dae34c9471896e6218574c98110";
+    byte[] filehandle = NetTool.hexStringToByteArray(dataLiteral);
+    ByteArrayKeyWrapper byteArrayKeyWrapper = new ByteArrayKeyWrapper(filehandle);
+    fileHandleToFAttr3.put(byteArrayKeyWrapper, objAttributes);
   }
 
   private void processCompleteMessage(NetSocket socket) {
@@ -497,35 +536,11 @@ public class TcpServerVerticle extends AbstractVerticle {
     // ctime (seconds) (4 bytes)
     // ctime (nseconds) (4 bytes)
 
-    // Current time in seconds and nanoseconds
-    long currentTimeMillis = System.currentTimeMillis();
-    int seconds = (int)(currentTimeMillis / 1000);
-    int nseconds = (int)((currentTimeMillis % 1000) * 1_000_000);
-
     long fileId = fileHandleToFileId.getOrDefault(new ByteArrayKeyWrapper(fhandle), 0x0000000002000002L);
     String filename = fileIdToFileName.getOrDefault(fileId, "/");
     int fileType = getFileType(filename);
 
-    FAttr3 objAttributes = FAttr3.builder()
-      .type(fileType)
-      .mode(0755)
-      .nlink(1)
-      .uid(0)
-      .gid(0)
-      .size(4096)
-      .used(4096)
-      .rdev(0)
-      .fsidMajor(0x08c60040)
-      .fsidMinor(0x2b5cd8a8)
-      .fileid(fileId)
-      .atimeSeconds(seconds)
-      .atimeNseconds(nseconds)
-      .mtimeSeconds(seconds)
-      .mtimeNseconds(nseconds)
-      .ctimeSeconds(seconds)
-      .ctimeNseconds(nseconds)
-      .build();
-
+    FAttr3 objAttributes = fileHandleToFAttr3.getOrDefault(new ByteArrayKeyWrapper(fhandle), null);
     GETATTR3resok getattr3resok = GETATTR3resok.builder()
       .objAttributes(objAttributes)
       .build();
@@ -550,7 +565,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     return fullResponseBuffer.array();
   }
 
-  private byte[] createNfsLookupReply(int xid, Buffer request, int startOffset) {
+  private byte[] createNfsLookupReply(int xid, Buffer request, int startOffset) throws IOException {
     // Parse directory file handle and name from request
     int dirFhandleLength = request.getInt(startOffset);
     byte[] dirFhandle = request.slice(startOffset + 4, startOffset + 4 + dirFhandleLength).getBytes();
@@ -565,46 +580,17 @@ public class TcpServerVerticle extends AbstractVerticle {
     ByteBuffer rpcHeaderBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
 
     // Generate a unique file handle based on the name
-
     byte[] fileHandle = getFileHandle(name, false);
 
     int fileHandleLength = fileHandle.length;
 
     log.info("Generated file handle for '{}': {}", name, bytesToHex(fileHandle));
 
-    // Current time in seconds and nanoseconds
-    long currentTimeMillis = System.currentTimeMillis();
-    int seconds = (int) (currentTimeMillis / 1000);
-    int nseconds = (int) ((currentTimeMillis % 1000) * 1_000_000);
-
     LOOKUP3res lookup3res = null;
     if (fileHandleLength > 0) {
-      int fileType;
-      fileType = getFileType(name);
-      long fileId = getFileId(name);
-
-      FAttr3 fAttr3 = FAttr3.builder()
-        .type(fileType)
-        .mode(0x000001ED)
-        .nlink(1)
-        .uid(0)
-        .gid(0)
-        .size(4096)
-        .used(4096)
-        .rdev(0)
-        .fsidMajor(0x08c60040)
-        .fsidMinor(0x2b5cd8a8)
-        .fileid(fileId)
-        .atimeSeconds(seconds)
-        .atimeNseconds(nseconds)
-        .mtimeSeconds(seconds)
-        .mtimeNseconds(nseconds)
-        .ctimeSeconds(seconds)
-        .ctimeNseconds(nseconds)
-        .build();
-
+      FAttr3 fAttr3 = fileHandleToFAttr3.getOrDefault(new ByteArrayKeyWrapper(fileHandle), null);
       PostOpAttr objAttributes = PostOpAttr.builder()
-        .attributesFollow(1)
+        .attributesFollow(fAttr3 != null ? 1 : 0)
         .attributes(fAttr3)
         .build();
 
@@ -621,28 +607,10 @@ public class TcpServerVerticle extends AbstractVerticle {
 
       lookup3res = LOOKUP3res.createOk(lookup3resok);
     } else {
-      FAttr3 dirAttr3 = FAttr3.builder()
-        .type(2)
-        .mode(0x000001ED)
-        .nlink(1)
-        .uid(0)
-        .gid(0)
-        .size(4096)
-        .used(4096)
-        .rdev(0)
-        .fsidMajor(0x08c60040)
-        .fsidMinor(0x2b5cd8a8)
-        .fileid(0x0000000002000002L)
-        .atimeSeconds(seconds)
-        .atimeNseconds(nseconds)
-        .mtimeSeconds(seconds)
-        .mtimeNseconds(nseconds)
-        .ctimeSeconds(seconds)
-        .ctimeNseconds(nseconds)
-        .build();
 
+      FAttr3 dirAttr3 = fileHandleToFAttr3.getOrDefault(new ByteArrayKeyWrapper(dirFhandle), null);
       PostOpAttr dirAttributes = PostOpAttr.builder()
-        .attributesFollow(1)
+        .attributesFollow(dirAttr3 != null ? 1 : 0)
         .attributes(dirAttr3)
         .build();
 
@@ -752,7 +720,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     return ((long)hash << 32) | (timestamp & 0xFFFFFFFFL);
   }
 
-  private byte[] createNfsReadReply(int xid, Buffer request, int startOffset) {
+  private byte[] createNfsReadReply(int xid, Buffer request, int startOffset) throws IOException {
     // Parse file handle, offset, and count from request
     int fhandleLength = request.getInt(startOffset);
     byte[] fhandle = request.slice(startOffset + 4, startOffset + 4 + fhandleLength).getBytes();
@@ -825,7 +793,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     return fullResponseBuffer.array();
   }
 
-  private byte[] createNfsWriteReply(int xid, Buffer request, int startOffset) {
+  private byte[] createNfsWriteReply(int xid, Buffer request, int startOffset) throws IOException {
     // Parse file handle, offset, and data from request
     int fhandleLength = request.getInt(startOffset);
     byte[] fhandle = request.slice(startOffset + 4, startOffset + 4 + fhandleLength).getBytes();
@@ -843,7 +811,17 @@ public class TcpServerVerticle extends AbstractVerticle {
     ByteBuffer rpcBodyBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
 
     PreOpAttr before = PreOpAttr.builder().attributesFollow(0).build();
-    PostOpAttr after = PostOpAttr.builder().attributesFollow(0).build();
+
+    ByteArrayKeyWrapper byteArrayKeyWrapper = new ByteArrayKeyWrapper(fhandle);
+    fileHandleToFAttr3.computeIfPresent(byteArrayKeyWrapper, (key, value) -> {
+      int used = (dataOfLength + 4096 - 1) / 4096 * 4096;
+      value.setSize(dataOfLength);
+      value.setUsed(used);
+      return value;
+    });
+
+    FAttr3 attributes = fileHandleToFAttr3.get(byteArrayKeyWrapper);
+    PostOpAttr after = PostOpAttr.builder().attributesFollow(1).attributes(attributes).build();
 
     WccData fileWcc = WccData.builder()
       .before(before)
@@ -867,22 +845,6 @@ public class TcpServerVerticle extends AbstractVerticle {
 
     write3res.serialize(rpcNfsBuffer);
 
-//    // Status (NFS_OK = 0)
-//    rpcNfsBuffer.putInt(0);
-//
-//    // before - fattr3 does not exist
-//    rpcNfsBuffer.putInt(0);
-//    // before - fattr3 does not exist
-//    rpcNfsBuffer.putInt(0);
-//
-//    // count
-//    rpcNfsBuffer.putInt(count);
-//    // committed
-//    rpcNfsBuffer.putInt(0); // FILE_SYNC
-//    // verf
-//    rpcNfsBuffer.putInt(0);
-//    rpcNfsBuffer.putInt(0);
-
     // Record marking
     int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
 
@@ -895,7 +857,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     return fullResponseBuffer.array();
   }
 
-  private byte[] createNfsFSInfoReply(int xid) {
+  private byte[] createNfsFSInfoReply(int xid) throws IOException {
     // Standard ONC RPC reply header
     ByteBuffer rpcHeaderBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
 
@@ -936,59 +898,34 @@ public class TcpServerVerticle extends AbstractVerticle {
     return fullResponseBuffer.array();
   }
 
-  private byte[] createNfsPathConfReply(int xid, Buffer request, int startOffset) {
+  private byte[] createNfsPathConfReply(int xid, Buffer request, int startOffset) throws IOException {
     // Parse file handle from request
     int fhandleLength = request.getInt(startOffset);
     byte[] fhandle = request.slice(startOffset + 4, startOffset + 4 + fhandleLength).getBytes();
 
     // Create reply
-    final int rpcMessageBodyLength = 24;
-    ByteBuffer rpcBodyBuffer = ByteBuffer.allocate(rpcMessageBodyLength);
-    rpcBodyBuffer.order(ByteOrder.BIG_ENDIAN);
-
-    // Standard RPC reply header
-    rpcBodyBuffer.putInt(xid);
-    rpcBodyBuffer.putInt(MSG_TYPE_REPLY);
-    rpcBodyBuffer.putInt(REPLY_STAT_MSG_ACCEPTED);
-    rpcBodyBuffer.putInt(VERF_FLAVOR_AUTH_NONE);
-    rpcBodyBuffer.putInt(VERF_LENGTH_ZERO);
-    rpcBodyBuffer.putInt(ACCEPT_STAT_SUCCESS);
+    final int rpcMessageBodyLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
+    ByteBuffer rpcBodyBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
 
     // NFS PATHCONF reply
-    // Structure:
-    // status (4 bytes)
-    // post_op_attr present flag (4 bytes)
-    // linkmax (4 bytes)
-    // name_max (4 bytes)
-    // no_trunc (4 bytes)
-    // chown_restricted (4 bytes)
-    // case_insensitive (4 bytes)
-    // case_preserving (4 bytes)
-    int rpcNfsLength = 4 + // status
-        4 + // post_op_attr present flag
-        4 + // linkmax
-        4 + // name_max
-        4 + // no_trunc
-        4 + // chown_restricted
-        4 + // case_insensitive
-        4;  // case_preserving
+    PostOpAttr objAttributes = PostOpAttr.builder().attributesFollow(0).build();
 
+    PATHCONF3resok pathconf3resok = PATHCONF3resok.builder()
+      .objAttributes(objAttributes)
+      .linkmax(32000)
+      .nameMax(255)
+      .noTrunc(1)
+      .chownRestricted(0)
+      .caseInsensitive(0)
+      .casePreserving(1)
+      .build();
+    PATHCONF3res pathconf3res = PATHCONF3res.createOk(pathconf3resok);
+
+    int rpcNfsLength = pathconf3res.getSerializedSize();
     ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
     rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
 
-    // Status (NFS_OK = 0)
-    rpcNfsBuffer.putInt(0);
-
-    // post_op_attr
-    rpcNfsBuffer.putInt(0); // present = false
-
-    // PATHCONF specific fields
-    rpcNfsBuffer.putInt(32000);     // linkmax (maximum number of hard links)
-    rpcNfsBuffer.putInt(255);       // name_max (maximum file name length)
-    rpcNfsBuffer.putInt(1);         // no_trunc (1 = true, names are truncated)
-    rpcNfsBuffer.putInt(0);         // chown_restricted (0 = false, chown is allowed)
-    rpcNfsBuffer.putInt(0);         // case_insensitive (0 = false, case sensitive)
-    rpcNfsBuffer.putInt(1);         // case_preserving (1 = true, case is preserved)
+    pathconf3res.serialize(rpcNfsBuffer);
 
     // Record marking
     int recordMarkValue = 0x80000000 | (rpcMessageBodyLength + rpcNfsLength);
@@ -1132,7 +1069,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     return fullResponseBuffer.array();
   }
 
-  private byte[] createNfsSetAttrReply(int xid, Buffer request, int startOffset) throws IOException {
+  private byte[] createNfsSetAttrReply(int xid, Buffer request, int startOffset) throws IOException, IllegalAccessException {
     // Parse file handle from request
     //int fhandleLength = request.getInt(startOffset);
     //byte[] fhandle = request.slice(startOffset + 4, startOffset + 4 + fhandleLength).getBytes();
@@ -1148,8 +1085,53 @@ public class TcpServerVerticle extends AbstractVerticle {
     // status (4 bytes)
     // pre_op_attr present flag (4 bytes)
     // post_op_attr present flag (4 bytes)
+    //FAttr3 attributes = fileHandleToFAttr3.get();
+    ByteArrayKeyWrapper byteArrayKeyWrapper = new ByteArrayKeyWrapper(setattr3args.getObject().getFileHandle());
+    fileHandleToFAttr3.computeIfPresent(byteArrayKeyWrapper, (key, value) -> {
+      SetAttr3 newAttributes = setattr3args.getNewAttributes();
+      int modeSetIt = newAttributes.getMode().getSetIt();
+      if (modeSetIt != 0) {
+        int mode = newAttributes.getMode().getMode();
+        value.setMode(mode);
+      }
+      int uidSetIt = newAttributes.getUid().getSetIt();
+      if (uidSetIt != 0) {
+        int uid = newAttributes.getUid().getUid();
+        value.setUid(uid);
+      }
+      int gidSetIt = newAttributes.getGid().getSetIt();
+      if (gidSetIt != 0) {
+        int gid = newAttributes.getGid().getGid();
+        value.setGid(gid);
+      }
+      int sizeSetIt = newAttributes.getSize().getSetIt();
+      if (sizeSetIt != 0) {
+        long size = newAttributes.getSize().getSize();
+        value.setSize(size);
+      }
+      int atimeSetToServerTime = newAttributes.getAtime().getSetIt();
+      int mtimeSetToServerTIme = newAttributes.getMtime().getSetIt();
+      long currentTimeMillis = System.currentTimeMillis();
+      int seconds = (int)(currentTimeMillis / 1000);
+      int nseconds = (int)((currentTimeMillis % 1000) * 1_000_000);
+      if (atimeSetToServerTime != 0) {
+        value.setAtimeSeconds(seconds);
+        value.setAtimeNseconds(nseconds);
+      }
+      if (mtimeSetToServerTIme != 0) {
+        value.setMtimeSeconds(seconds);
+        value.setMtimeNseconds(nseconds);
+      }
+
+      return value;
+    });
+    FAttr3 attributes = fileHandleToFAttr3.get(byteArrayKeyWrapper);
+
     PreOpAttr before = PreOpAttr.builder().attributesFollow(0).build();
-    PostOpAttr after = PostOpAttr.builder().attributesFollow(0).build();
+    PostOpAttr after = PostOpAttr.builder()
+      .attributesFollow(1)
+      .attributes(attributes)
+      .build();
     WccData objWcc = WccData.builder()
       .before(before)
       .after(after)
@@ -1178,7 +1160,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     return fullResponseBuffer.array();
   }
 
-  private byte[] createNfsAccessReply(int xid, Buffer request, int startOffset) {
+  private byte[] createNfsAccessReply(int xid, Buffer request, int startOffset) throws IOException {
     // Parse file handle from request
     int fhandleLength = request.getInt(startOffset);
     byte[] fhandle = request.slice(startOffset + 4, startOffset + 4 + fhandleLength).getBytes();
@@ -1198,31 +1180,6 @@ public class TcpServerVerticle extends AbstractVerticle {
     String filename = fileIdToFileName.getOrDefault(fileId, "/");
     // File attributes
     int fileType =  getFileType(filename);
-    // Current time in seconds and nanosecondsG
-    long currentTimeMillis = System.currentTimeMillis();
-    int seconds = (int)(currentTimeMillis / 1000);
-    int nseconds = (int)((currentTimeMillis % 1000) * 1_000_000);
-
-    FAttr3 dirAttr3 = FAttr3.builder()
-      .type(fileType)
-      .mode(0x000001ED)
-      .nlink(1)
-      .uid(0)
-      .gid(0)
-      .size(4096)
-      .used(4096)
-      .rdev(0)
-      .fsidMajor(0x08c60040)
-      .fsidMinor(0x2b5cd8a8)
-      .fileid(fileId)
-      .atimeSeconds(seconds)
-      .atimeNseconds(nseconds)
-      .mtimeSeconds(seconds)
-      .mtimeNseconds(nseconds)
-      .ctimeSeconds(seconds)
-      .ctimeNseconds(nseconds)
-      .build();
-
     // ACCESS flags
     // ACCESS_READ     = 0x0001
     // ACCESS_LOOKUP   = 0x0002
@@ -1254,8 +1211,10 @@ public class TcpServerVerticle extends AbstractVerticle {
     log.info("ACCESS response - file type: {}, granted access: 0x{}",
       fileType, Integer.toHexString(accessFlags));
 
+
+    FAttr3 dirAttr3 = fileHandleToFAttr3.getOrDefault(new ByteArrayKeyWrapper(fhandle), null);
     PostOpAttr objAttributes = PostOpAttr.builder()
-      .attributesFollow(1)
+      .attributesFollow(dirAttr3 != null ? 1 : 0)
       .attributes(dirAttr3)
       .build();
 
@@ -1403,6 +1362,9 @@ public class TcpServerVerticle extends AbstractVerticle {
     final int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
     ByteBuffer rpcHeaderBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
 
+    int fileHandleLength = request.getInt(startOffset);
+    byte[] fileHandle = request.slice(startOffset + 4, startOffset + 4 + fileHandleLength).getBytes();
+
     // NFS COMMIT reply
     // Structure:
     // status (4 bytes)
@@ -1410,8 +1372,12 @@ public class TcpServerVerticle extends AbstractVerticle {
     // wcc_data
     //   pre_op_attr present flag (4 bytes)
     //   post_op_attr present flag (4 bytes)
+
+    ByteArrayKeyWrapper keyWrapper = new ByteArrayKeyWrapper(fileHandle);
+    FAttr3 attritbutes = fileHandleToFAttr3.getOrDefault(keyWrapper, null);
+
     PreOpAttr befor = PreOpAttr.builder().attributesFollow(0).build();
-    PostOpAttr after = PostOpAttr.builder().attributesFollow(0).build();
+    PostOpAttr after = PostOpAttr.builder().attributesFollow(attritbutes != null ? 1 : 0).attributes(attritbutes).build();
 
     WccData fileWcc =  WccData.builder()
       .before(befor)
@@ -1488,20 +1454,16 @@ public class TcpServerVerticle extends AbstractVerticle {
 
     FAttr3 attributes = FAttr3.builder()
       .type(fileType)
-      .mode(0755)
+      .mode(0)
       .nlink(1)
       .uid(0)
       .gid(0)
-      .size(4096)
-      .used(4096)
+      .size(0)
+      .used(0)
       .rdev(0)
       .fsidMajor(0x08c60040)
       .fsidMinor(0x2b5cd8a8)
       .fileid(fileId)
-      .atimeSeconds(seconds)
-      .atimeNseconds(nseconds)
-      .mtimeSeconds(seconds)
-      .mtimeNseconds(nseconds)
       .ctimeSeconds(seconds)
       .ctimeNseconds(nseconds)
       .build();
@@ -1528,6 +1490,9 @@ public class TcpServerVerticle extends AbstractVerticle {
     fileHandleToFileId.put(new ByteArrayKeyWrapper(fileHandle), fileId);
     fileHandleToFileName.put(new ByteArrayKeyWrapper(fileHandle), name);
     fileIdToFileName.put(fileId, name);
+    fileIdToFAttr3.put(fileId, attributes);
+    fileHandleToFAttr3.put(new ByteArrayKeyWrapper(fileHandle), attributes);
+    fileHandleToParentFileHandle.put(new ByteArrayKeyWrapper(fileHandle), new ByteArrayKeyWrapper(dirFhandle));
 
     // Record marking
     int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
@@ -1970,7 +1935,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     return fullResponseBuffer.array();
   }
 
-  private byte[] createNfsReadDirPlusReply(int xid, Buffer request, int startOffset) {
+  private byte[] createNfsReadDirPlusReply(int xid, Buffer request, int startOffset) throws IOException {
     // Parse directory file handle from request
     int dirFhandleLength = request.getInt(startOffset);
     log.info("Directory handle length: {}", dirFhandleLength);
@@ -2118,142 +2083,6 @@ public class TcpServerVerticle extends AbstractVerticle {
     rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
 
     readdirplus3res.serialize(rpcNfsBuffer);
-
-//    // Status (NFS_OK = 0)
-//    rpcNfsBuffer.putInt(0);
-//
-//    // dir_attributes present flag (1 = true)
-//    rpcNfsBuffer.putInt(1);
-//
-//    // Directory attributes
-//    rpcNfsBuffer.putInt(2);  // type (NF3DIR = 2, directory)
-//    rpcNfsBuffer.putInt(0x000001ED); // mode (rwxr-xr-x)
-//    rpcNfsBuffer.putInt(1);  // nlink
-//    rpcNfsBuffer.putInt(0);  // uid (root)
-//    rpcNfsBuffer.putInt(0);  // gid (root)
-//    rpcNfsBuffer.putLong(4096);  // size (4KB)
-//    rpcNfsBuffer.putLong(4096);  // used (4KB)
-//    rpcNfsBuffer.putLong(0);  // rdev (0 for directories)
-//    rpcNfsBuffer.putInt(0x08c60040);  // fsid (major)
-//    rpcNfsBuffer.putInt(0x2b5cd8a8);  // fsid (minor)
-//    rpcNfsBuffer.putLong(0x0000000002000002L);  // fileid
-//
-//    // Current time in seconds and nanoseconds
-//    long currentTimeMillis = System.currentTimeMillis();
-//    int seconds = (int)(currentTimeMillis / 1000);
-//    int nseconds = (int)((currentTimeMillis % 1000) * 1_000_000);
-//
-//    // atime
-//    rpcNfsBuffer.putInt(seconds);  // atime (seconds)
-//    rpcNfsBuffer.putInt(nseconds);  // atime (nseconds)
-//
-//    // mtime
-//    rpcNfsBuffer.putInt(seconds);  // mtime (seconds)
-//    rpcNfsBuffer.putInt(nseconds);  // mtime (nseconds)
-//
-//    // ctime
-//    rpcNfsBuffer.putInt(seconds);  // ctime (seconds)
-//    rpcNfsBuffer.putInt(nseconds);  // ctime (nseconds)
-//
-//    // cookieverf (use current time as verifier)
-//    rpcNfsBuffer.putLong(0L);
-//
-//    // entries present flag (1 = true if we have entries to return)
-//    rpcNfsBuffer.putInt(entriesToReturn > 0 ? 1 : 0);
-//
-//    // Add directory entries for this page
-//    for (int i = 0; i < entriesToReturn; i++) {
-//        int entryIndex = startIndex + i;
-//        String entryName = allEntries.get(entryIndex); // [entryIndex];
-//        int entryNameLength = entryName.length();
-//
-//        log.info("Sending entry {}: '{}' at index {}", i + 1, entryName, entryIndex);
-//
-//        long fileId = getFileId(entryName);
-//        // fileid (unique for each entry)
-//        rpcNfsBuffer.putLong(fileId);
-//
-//        // name length and name
-//        rpcNfsBuffer.putInt(entryNameLength);
-//        byte[] nameBytes = entryName.getBytes();
-//        rpcNfsBuffer.put(nameBytes);
-//        // Pad name to 4 bytes
-//        int padding = ((entryNameLength + 3) & ~3) - entryNameLength;
-//        for (int j = 0; j < padding; j++) {
-//            rpcNfsBuffer.put((byte)0);
-//        }
-//
-//        // cookie (use the next entry's index as cookie)
-//        // For the last entry in the page, use 0 if it's the last page
-//        long nextCookie;
-//        if (i == entriesToReturn - 1 && isLastPage) {
-//            // 注意：
-//            // cookie 不返回这个会导致无限循环
-//            nextCookie = 0x7fffffffffffffffL;
-//        } else {
-//            nextCookie = entryIndex + 1;
-//        }
-//
-//        rpcNfsBuffer.putLong(nextCookie);
-//        //rpcNfsBuffer.putLong(0x7fffffffffffffffL);
-//
-//        log.info("Entry '{}' cookie: {} (isLastPage: {}, isLastEntry: {})",
-//                entryName, nextCookie, isLastPage, i == entriesToReturn - 1);
-//
-//        // name_attributes present flag (1 = true)
-//        rpcNfsBuffer.putInt(1);
-//
-//        int fileType = getFileType(entryName);
-//        // File attributes
-//        if (fileType == 2) {
-//            rpcNfsBuffer.putInt(2);  // type (NF3DIR = 2, directory)
-//            rpcNfsBuffer.putInt(0x000001ED); // mode (rwxr-xr-x)
-//        } else {
-//            rpcNfsBuffer.putInt(1);  // type (NF3REG = 1, regular file)
-//            rpcNfsBuffer.putInt(0x000001A4); // mode (rw-r--r--)
-//        }
-//        rpcNfsBuffer.putInt(1);  // nlink
-//        rpcNfsBuffer.putInt(0);  // uid (root)
-//        rpcNfsBuffer.putInt(0);  // gid (root)
-//        rpcNfsBuffer.putLong(4096);  // size
-//        rpcNfsBuffer.putLong(4096);  // used
-//        rpcNfsBuffer.putLong(0);  // rdev
-//        rpcNfsBuffer.putInt(0x08c60040);  // fsid (major)
-//        rpcNfsBuffer.putInt(0x2b5cd8a8);  // fsid (minor)
-//
-//        rpcNfsBuffer.putLong(fileId);  // fileid
-//        //rpcNfsBuffer.putLong(0x0000000002000002L);
-//
-//        // atime
-//        rpcNfsBuffer.putInt(seconds);  // atime (seconds)
-//        rpcNfsBuffer.putInt(nseconds);  // atime (nseconds)
-//
-//        // mtime
-//        rpcNfsBuffer.putInt(seconds);  // mtime (seconds)
-//        rpcNfsBuffer.putInt(nseconds);  // mtime (nseconds)
-//
-//        // ctime
-//        rpcNfsBuffer.putInt(seconds);  // ctime (seconds)
-//        rpcNfsBuffer.putInt(nseconds);  // ctime (nseconds)
-//
-//        // name_handle present flag (1 = true)
-//        rpcNfsBuffer.putInt(1);
-//
-//        // File handle
-//        rpcNfsBuffer.putInt(dirFhandleLength); // handle length
-//
-//        // 0100070102000002000000003e3e7dae34c9471896e6218574c9811006000002781980a5
-////        String dataLiteral = "0100070002000002000000003e3e7dae34c9471896e6218574c98110";
-////        byte[] fileHandle = NetTool.hexStringToByteArray(dataLiteral);
-//        rpcNfsBuffer.put(dirFhandle); // handle data
-//
-//        // nextentry present flag (1 if not last entry in this page, 0 if last entry)
-//        rpcNfsBuffer.putInt(i < entriesToReturn - 1 ? 1 : 0);
-//    }
-//
-//    // eof flag (1 = true if this is the last page)
-//    rpcNfsBuffer.putInt(1);
-    //rpcNfsBuffer.putInt(1);
 
     // Record marking
     int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);

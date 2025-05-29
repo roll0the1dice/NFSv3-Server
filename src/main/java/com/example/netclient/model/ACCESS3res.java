@@ -5,28 +5,18 @@ import com.example.netclient.enums.NfsStat3;
 import java.nio.ByteBuffer;
 import java.util.Objects;
 
-public class ACCESS3res {
-  private final NfsStat3 status;
-  private final ACCESS3resok resok;     // Nullable
-  private final ACCESS3resfail resfail; // Nullable
+public class ACCESS3res extends AbstractNfsResponse<ACCESS3resok, ACCESS3resfail> {
 
-  private ACCESS3res(NfsStat3 status, ACCESS3resok resok, ACCESS3resfail resfail) {
-    this.status = Objects.requireNonNull(status, "Status cannot be null");
-    this.resok = resok;
-    this.resfail = resfail;
-
-    // 确保逻辑一致性：如果 status 是 OK，则 resok 必须非空，resfail 必须为空，反之亦然。
-    if (status == NfsStat3.NFS3_OK) {
-      Objects.requireNonNull(resok, "resok cannot be null when status is NFS3_OK");
-      if (resfail != null) {
-        throw new IllegalArgumentException("resfail must be null when status is NFS3_OK");
-      }
-    } else {
-      Objects.requireNonNull(resfail, "resfail cannot be null when status is not NFS3_OK");
-      if (resok != null) {
-        throw new IllegalArgumentException("resok must be null when status is not NFS3_OK");
-      }
-    }
+  /**
+   * Constructor ensures that only one of resok or resfail is set,
+   * based on the status.
+   *
+   * @param status
+   * @param resok
+   * @param resfail
+   */
+  public ACCESS3res(NfsStat3 status, ACCESS3resok resok, ACCESS3resfail resfail) {
+    super(status, resok, resfail);
   }
 
   public static ACCESS3res createOk(ACCESS3resok okData) {
@@ -40,36 +30,4 @@ public class ACCESS3res {
     return new ACCESS3res(failStatus, null, failData);
   }
 
-  public void serialize(ByteBuffer buffer) {
-    buffer.putInt(status.getCode());
-
-    switch (status) {
-      case NFS3_OK:
-        if (resok == null) {
-          throw new IllegalArgumentException("resok must be not null when status is NFS3_OK");
-        }
-        resok.serialize(buffer);
-        break;
-      default:
-        if (resfail == null) {
-          throw new IllegalArgumentException("resfail must be not null when status is not NFS3_OK");
-        }
-        resfail.serialize(buffer);
-    }
-  }
-
-  public int getSerializedSize() {
-    if (status == NfsStat3.NFS3_OK) {
-      if (resok == null) {
-        throw new IllegalArgumentException("resok must be not null when status is NFS3_OK");
-      }
-      return 4 + // status
-        resok.getSerializedSize();
-    }
-    if (resfail == null) {
-      throw new IllegalArgumentException("resfail must be not null when status is NFS3ERR_NOENT");
-    }
-
-    return 4 + resfail.getSerializedSize();
-  }
 }

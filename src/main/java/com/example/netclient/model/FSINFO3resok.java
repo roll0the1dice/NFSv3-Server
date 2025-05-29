@@ -4,12 +4,13 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 
+import java.io.Serializable;
 import java.nio.ByteBuffer;
 
 @Data
 @AllArgsConstructor
 @Builder
-public class FSINFO3resok {
+public class FSINFO3resok implements SerializablePayload {
   private int post_op_attr;
   private int rtmax;
   private int rtpref;
@@ -23,6 +24,7 @@ public class FSINFO3resok {
   private int nseconds;
   private int extraField; // extra field
 
+  @Override
   public void serialize(ByteBuffer buffer) {
     buffer.putInt(post_op_attr);
     buffer.putInt(rtmax);
@@ -38,7 +40,8 @@ public class FSINFO3resok {
     buffer.putInt(extraField);
   }
 
-  public static int getSerializedSize() {
+  @Override
+  public int getSerializedSize() {
     return 4 + // post_op_attr
       4 + // rtmax
       4 + // rtpref

@@ -10,16 +10,14 @@ import java.nio.ByteBuffer;
 @Data
 @AllArgsConstructor
 @Builder
-public class ACCESS3resfail implements SerializablePayload {
-  private PostOpAttr dirAttributes;
-
+public class PATHCONF3resfail implements SerializablePayload {
   @Override
   public void serialize(ByteBuffer buffer) {
-    dirAttributes.serialize(buffer);
+
   }
 
   @Override
   public int getSerializedSize() {
-    return dirAttributes.getSerializedSize();
+    return 0;
   }
 }
