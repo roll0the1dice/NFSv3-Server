@@ -1,25 +1,27 @@
-package com.example.netclient.model;
+package com.example.netclient.model.acl;
 
+import com.example.netclient.model.PostOpAttr;
+import com.example.netclient.model.SerializablePayload;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 
+import java.io.Serializable;
 import java.nio.ByteBuffer;
 
 @Data
 @AllArgsConstructor
 @Builder
-public class ACCESS3resok {
+public class GETACL3resfail implements SerializablePayload {
   private PostOpAttr objAttributes;
-  private int accessFlags;
 
+  @Override
   public void serialize(ByteBuffer buffer) {
     objAttributes.serialize(buffer);
-    buffer.putInt(accessFlags);
   }
 
+  @Override
   public int getSerializedSize() {
-
-    return 4 + objAttributes.getSerializedSize();
+    return objAttributes.getSerializedSize();
   }
 }

@@ -16,10 +16,10 @@ public class WRITE3resok implements SerializablePayload {
     FILE_SYNC;
   };
 
-  WccData fileWcc;
-  int count;
-  StableHow committed;
-  long verifier;
+  private WccData fileWcc;
+  private int count;
+  private StableHow committed;
+  private long verifier;
 
   @Override
   public void serialize(ByteBuffer buffer) {

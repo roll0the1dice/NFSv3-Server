@@ -10,8 +10,8 @@ import java.nio.ByteBuffer;
 @AllArgsConstructor
 @Builder
 public class WccData implements SerializablePayload {
-  PreOpAttr before;
-  PostOpAttr after;
+  private PreOpAttr before;
+  private PostOpAttr after;
 
   @Override
   public void serialize(ByteBuffer buffer) {

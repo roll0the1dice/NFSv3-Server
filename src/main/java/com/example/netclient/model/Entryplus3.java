@@ -12,16 +12,16 @@ import java.nio.ByteBuffer;
 @AllArgsConstructor
 @Builder
 public class Entryplus3 implements SerializablePayload {
-  long fileid;
-  int fileNameLength;
-  byte[] fileName;
-  long cookie;
-  int nameAttrPresent;
-  FAttr3 nameAttr;
-  int nameHandlePresent;
-  int nameHandleLength;
-  byte[] nameHandle;
-  int nextEntryPresent;
+  private long fileid;
+  private int fileNameLength;
+  private byte[] fileName;
+  private long cookie;
+  private int nameAttrPresent;
+  private FAttr3 nameAttr;
+  private int nameHandlePresent;
+  private int nameHandleLength;
+  private byte[] nameHandle;
+  private int nextEntryPresent;
 
   @Override
   public void serialize(ByteBuffer buffer) {

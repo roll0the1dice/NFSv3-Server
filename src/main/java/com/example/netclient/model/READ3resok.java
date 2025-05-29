@@ -10,11 +10,11 @@ import java.nio.ByteBuffer;
 @AllArgsConstructor
 @Builder
 public class READ3resok implements SerializablePayload {
-  PostOpAttr fileAttributes;
-  int count;
-  int eof;
-  int dataOfLength;
-  byte[] data;
+  private PostOpAttr fileAttributes;
+  private int count;
+  private int eof;
+  private int dataOfLength;
+  private byte[] data;
 
   @Override
   public void serialize(ByteBuffer buffer) {

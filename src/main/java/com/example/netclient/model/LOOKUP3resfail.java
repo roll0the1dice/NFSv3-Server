@@ -10,7 +10,7 @@ import java.nio.ByteBuffer;
 @AllArgsConstructor
 @Builder
 public class LOOKUP3resfail implements SerializablePayload {
-  PostOpAttr dirAttributes;
+  private PostOpAttr dirAttributes;
 
   @Override
   public void serialize(ByteBuffer buffer) {

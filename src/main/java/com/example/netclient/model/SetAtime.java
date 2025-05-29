@@ -9,18 +9,22 @@ import java.nio.ByteBuffer;
 @Data
 @AllArgsConstructor
 @Builder
-public class COMMIT3resok implements SerializablePayload {
-  private WccData fileWcc;
-  private long verifier;
+public class SetAtime implements SerializablePayload {
+  public int setIt;
+  public int atimeSeconds;
+  public int atimeNSeconds;
 
   @Override
   public void serialize(ByteBuffer buffer) {
-    fileWcc.serialize(buffer);
-    buffer.putLong(verifier);
+    buffer.putInt(setIt);
+    if (setIt > 0) {
+      buffer.putInt(atimeSeconds);
+      buffer.putInt(atimeNSeconds);
+    }
   }
 
   @Override
   public int getSerializedSize() {
-    return fileWcc.getSerializedSize() + 8;
+    return 4 + (setIt > 0 ? 8 : 0);
   }
 }

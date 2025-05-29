@@ -9,17 +9,20 @@ import java.nio.ByteBuffer;
 @Data
 @AllArgsConstructor
 @Builder
-public class ACCESS3resok {
-  private PostOpAttr objAttributes;
-  private int accessFlags;
+public class SetSize3 implements SerializablePayload{
+  public int setIt;
+  public long size;
 
+  @Override
   public void serialize(ByteBuffer buffer) {
-    objAttributes.serialize(buffer);
-    buffer.putInt(accessFlags);
+    buffer.putInt(setIt);
+    if (setIt > 0) {
+      buffer.putLong(size);
+    }
   }
 
+  @Override
   public int getSerializedSize() {
-
-    return 4 + objAttributes.getSerializedSize();
+    return 4 + (setIt > 0 ? 8 : 0);
   }
 }

@@ -1,26 +1,25 @@
-package com.example.netclient.model;
+package com.example.netclient.model.acl;
 
+import com.example.netclient.model.SerializablePayload;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 
+import java.io.Serializable;
 import java.nio.ByteBuffer;
+
 
 @Data
 @AllArgsConstructor
 @Builder
-public class COMMIT3resok implements SerializablePayload {
-  private WccData fileWcc;
-  private long verifier;
-
+public class GETACL3resok implements SerializablePayload {
   @Override
   public void serialize(ByteBuffer buffer) {
-    fileWcc.serialize(buffer);
-    buffer.putLong(verifier);
+
   }
 
   @Override
   public int getSerializedSize() {
-    return fileWcc.getSerializedSize() + 8;
+    return 0;
   }
 }

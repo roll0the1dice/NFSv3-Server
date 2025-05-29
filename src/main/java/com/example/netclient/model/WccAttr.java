@@ -16,11 +16,11 @@ import java.nio.ByteBuffer;
 @AllArgsConstructor
 @Builder
 public class WccAttr implements SerializablePayload {
-  long size;
-  int mtimeSeconds;
-  int mtimeNSeconds;
-  int ctimeSeconds;
-  int ctimeNSeconds;
+  private long size;
+  private int mtimeSeconds;
+  private int mtimeNSeconds;
+  private int ctimeSeconds;
+  private int ctimeNSeconds;
 
   @Override
   public void serialize(ByteBuffer buffer) {

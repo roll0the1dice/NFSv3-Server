@@ -11,7 +11,7 @@ import java.nio.ByteBuffer;
 @AllArgsConstructor
 @Builder
 public class FSINFO3resfail implements SerializablePayload {
-  PostOpAttr objAttributes; // post_op_attr present flag
+  private PostOpAttr objAttributes; // post_op_attr present flag
 
   @Override
   public void serialize(ByteBuffer buffer) {

@@ -10,7 +10,7 @@ import java.nio.ByteBuffer;
 @AllArgsConstructor
 @Builder
 public class ACCESS3resfail {
-  PostOpAttr dirAttributes;
+  private PostOpAttr dirAttributes;
 
   public void serialize(ByteBuffer buffer) {
     dirAttributes.serialize(buffer);

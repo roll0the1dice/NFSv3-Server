@@ -9,8 +9,8 @@ import java.nio.ByteBuffer;
 @AllArgsConstructor
 @Builder
 public class PostOpAttr implements SerializablePayload {
-  int attributesFollow; // present flag
-  FAttr3 attributes;
+  private int attributesFollow; // present flag
+  private FAttr3 attributes;
 
   @Override
   public void serialize(ByteBuffer buffer) {

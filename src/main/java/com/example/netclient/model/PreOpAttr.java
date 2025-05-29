@@ -11,8 +11,8 @@ import java.nio.ByteBuffer;
 @AllArgsConstructor
 @Builder
 public class PreOpAttr implements SerializablePayload {
-  int attributesFollow; // present flag
-  WccAttr attributes;
+  private int attributesFollow; // present flag
+  private WccAttr attributes;
 
   @Override
   public void serialize(ByteBuffer buffer) {

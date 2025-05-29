@@ -10,7 +10,7 @@ import java.nio.ByteBuffer;
 @AllArgsConstructor
 @Builder
 public class READ3resfail implements SerializablePayload {
-  PostOpAttr fileAttributes;
+  private PostOpAttr fileAttributes;
 
   @Override
   public void serialize(ByteBuffer buffer) {

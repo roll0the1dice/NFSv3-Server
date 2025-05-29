@@ -11,7 +11,7 @@ import java.nio.ByteBuffer;
 @AllArgsConstructor
 @Builder
 public class COMMIT3resfail implements SerializablePayload {
-  WccData fileWcc;
+  private WccData fileWcc;
 
   @Override
   public void serialize(ByteBuffer buffer) {

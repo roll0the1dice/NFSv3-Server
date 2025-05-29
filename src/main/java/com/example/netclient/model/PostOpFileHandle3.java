@@ -1,6 +1,5 @@
 package com.example.netclient.model;
 
-import com.example.netclient.enums.Nfs3Constant;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -11,18 +10,19 @@ import java.nio.ByteBuffer;
 @Data
 @AllArgsConstructor
 @Builder
-public class NfsTime3 implements SerializablePayload {
-  private int seconds;
-  private int nseconds;
+public class PostOpFileHandle3 implements SerializablePayload {
+  private int handleFollows;
+  private NfsFileHandle3 nfsFileHandle;
 
   @Override
   public void serialize(ByteBuffer buffer) {
-    buffer.putInt(seconds);
-    buffer.putInt(nseconds);
+    buffer.putInt(handleFollows);
+    nfsFileHandle.serialize(buffer);
   }
 
   @Override
   public int getSerializedSize() {
-    return 8;
+    int t = handleFollows > 0 ? nfsFileHandle.getSerializedSize() : 0;
+    return 4 + t;
   }
 }

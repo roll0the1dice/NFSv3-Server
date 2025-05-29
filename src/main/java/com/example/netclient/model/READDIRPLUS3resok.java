@@ -12,11 +12,11 @@ import java.util.List;
 @AllArgsConstructor
 @Builder
 public class READDIRPLUS3resok implements SerializablePayload {
-  PostOpAttr dirAttributes;
-  long cookieverf;
-  int entriesPresentFlag;
-  List<Entryplus3> entries;
-  int eof;
+  private PostOpAttr dirAttributes;
+  private long cookieverf;
+  private int entriesPresentFlag;
+  private List<Entryplus3> entries;
+  private int eof;
 
   @Override
   public void serialize(ByteBuffer buffer) {

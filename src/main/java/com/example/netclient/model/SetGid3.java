@@ -4,23 +4,28 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 
+import java.io.Serializable;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 
 @Data
 @AllArgsConstructor
 @Builder
-public class COMMIT3resok implements SerializablePayload {
-  private WccData fileWcc;
-  private long verifier;
+public class SetGid3 implements SerializablePayload {
+  public int setIt;
+  public int gid;
 
   @Override
   public void serialize(ByteBuffer buffer) {
-    fileWcc.serialize(buffer);
-    buffer.putLong(verifier);
+    buffer.putInt(setIt);
+    if (setIt > 0) {
+      buffer.putInt(gid);
+    }
   }
 
   @Override
   public int getSerializedSize() {
-    return fileWcc.getSerializedSize() + 8;
+    return 4 + (setIt > 0 ? 4 : 0);
   }
+
 }

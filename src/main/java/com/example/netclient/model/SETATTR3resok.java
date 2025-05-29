@@ -4,22 +4,22 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 
+import java.io.Serializable;
 import java.nio.ByteBuffer;
 
 @Data
 @AllArgsConstructor
 @Builder
-public class ACCESS3resok {
-  private PostOpAttr objAttributes;
-  private int accessFlags;
+public class SETATTR3resok implements SerializablePayload {
+  private WccData objWcc;
 
+  @Override
   public void serialize(ByteBuffer buffer) {
-    objAttributes.serialize(buffer);
-    buffer.putInt(accessFlags);
+    objWcc.serialize(buffer);
   }
 
+  @Override
   public int getSerializedSize() {
-
-    return 4 + objAttributes.getSerializedSize();
+    return objWcc.getSerializedSize();
   }
 }

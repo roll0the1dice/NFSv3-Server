@@ -12,23 +12,23 @@ import java.nio.ByteBuffer;
 @AllArgsConstructor
 @Builder
 public class FAttr3 implements SerializablePayload {
-  int type;
-  int mode;
-  int nlink;
-  int uid;
-  int gid;
-  long size;
-  long used;
-  long rdev;
-  int fsidMajor;
-  int fsidMinor;
-  long fileid;
-  int atimeSeconds;
-  int atimeNseconds;
-  int mtimeSeconds;
-  int mtimeNseconds;
-  int ctimeSeconds;
-  int ctimeNseconds;
+  private int type;
+  private int mode;
+  private int nlink;
+  private int uid;
+  private int gid;
+  private long size;
+  private long used;
+  private long rdev;
+  private int fsidMajor;
+  private int fsidMinor;
+  private long fileid;
+  private int atimeSeconds;
+  private int atimeNseconds;
+  private int mtimeSeconds;
+  private int mtimeNseconds;
+  private int ctimeSeconds;
+  private int ctimeNseconds;
 
   @Override
   public void serialize(ByteBuffer buffer) {

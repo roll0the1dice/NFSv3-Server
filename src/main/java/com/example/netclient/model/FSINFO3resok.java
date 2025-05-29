@@ -10,18 +10,18 @@ import java.nio.ByteBuffer;
 @AllArgsConstructor
 @Builder
 public class FSINFO3resok {
-  int post_op_attr;
-  int rtmax;
-  int rtpref;
-  int rtmult;
-  int wtmax;
-  int wtpref;
-  int wtmult;
-  int dtpref;
-  long maxFilesize;
-  int seconds;
-  int nseconds;
-  int extraField; // extra field
+  private int post_op_attr;
+  private int rtmax;
+  private int rtpref;
+  private int rtmult;
+  private int wtmax;
+  private int wtpref;
+  private int wtmult;
+  private int dtpref;
+  private long maxFilesize;
+  private int seconds;
+  private int nseconds;
+  private int extraField; // extra field
 
   public void serialize(ByteBuffer buffer) {
     buffer.putInt(post_op_attr);

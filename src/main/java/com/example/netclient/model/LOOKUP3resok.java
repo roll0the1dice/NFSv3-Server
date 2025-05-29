@@ -10,10 +10,10 @@ import java.nio.ByteBuffer;
 @AllArgsConstructor
 @Builder
 public class LOOKUP3resok implements SerializablePayload {
-  int objHandlerLength; // object handle length
-  byte[] objectHandleData; // object handle data
-  PostOpAttr objAttributes;
-  PostOpAttr dirAttributes;
+  private int objHandlerLength; // object handle length
+  private byte[] objectHandleData; // object handle data
+  private PostOpAttr objAttributes;
+  private PostOpAttr dirAttributes;
 
   @Override
   public void serialize(ByteBuffer buffer) {
