@@ -633,12 +633,20 @@ public class TcpServerVerticle extends AbstractVerticle {
         .ctimeNseconds(nseconds)
         .build();
 
+      PostOpAttr objAttributes = PostOpAttr.builder()
+        .attributesFollow(1)
+        .attributes(fAttr3)
+        .build();
+
+      PostOpAttr dirAttributes = PostOpAttr.builder()
+        .attributesFollow(0)
+        .build();
+
       LOOKUP3resok lookup3resok = LOOKUP3resok.builder()
         .objHandlerLength(fileHandleLength)
         .objectHandleData(fileHandle)
-        .objPresentFlag(1)
-        .fAttr3(fAttr3)
-        .dirPresentFlag(0)
+        .objAttributes(objAttributes)
+        .dirAttributes(dirAttributes)
         .build();
 
       lookup3res = LOOKUP3res.createOk(lookup3resok);
@@ -663,10 +671,14 @@ public class TcpServerVerticle extends AbstractVerticle {
         .ctimeNseconds(nseconds)
         .build();
 
+      PostOpAttr dirAttributes = PostOpAttr.builder()
+        .attributesFollow(1)
+        .attributes(dirAttr3)
+        .build();
+
       LOOKUP3resfail lookup3resfail = LOOKUP3resfail.builder()
-          .dirPresentFlag(1)
-          .dirAttributes(dirAttr3)
-          .build();
+        .dirAttributes(dirAttributes)
+        .build();
 
       lookup3res = LOOKUP3res.createFail(NfsStat3.NFS3ERR_NOENT, lookup3resfail);
     }
@@ -781,20 +793,6 @@ public class TcpServerVerticle extends AbstractVerticle {
     final int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
     ByteBuffer rpcBodyBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
 
-//    // NFS READ reply
-//    int rpcNfsLength = 4 + // NFS3_OK
-//      4 + // post_op_attr present flag
-//      Nfs3Constant.FILE_ATTR_SIZE + // file_attributes
-//      4 + // bytes_read
-//      4 + // eof
-//      4 + // data of length
-//      (dataLength + 4 -1 ) / 4 * 4; // data
-
-
-
-    // Status (NFS_OK = 0)
-    //rpcNfsBuffer.putInt(0);
-
     long fileId = fileHandleToFileId.getOrDefault(new ByteArrayKeyWrapper(fhandle), 0x0000000002000002L);
     String filename = fileIdToFileName.getOrDefault(fileId, "/");
     int fileType =  getFileType(filename);
@@ -823,9 +821,13 @@ public class TcpServerVerticle extends AbstractVerticle {
       .ctimeNseconds(0)
       .build();
 
+    PostOpAttr fileAttributes = PostOpAttr.builder()
+      .attributesFollow(1)
+      .attributes(fAttr3)
+      .build();
+
     READ3resok read3resok = READ3resok.builder()
-      .filePresentFlag(1)
-      .fAttr3(fAttr3)
+      .fileAttributes(fileAttributes)
       .count(dataLength)
       .eof(1)
       .dataOfLength(dataLength)
@@ -838,49 +840,6 @@ public class TcpServerVerticle extends AbstractVerticle {
     ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
     rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
     read3res.serialize(rpcNfsBuffer);
-
-//    // present
-//    rpcNfsBuffer.putInt(1);
-//    // Attributes
-//    // type (NF3REG = 1)
-//    rpcNfsBuffer.putInt(fileType);
-//    // mode (0644)
-//    rpcNfsBuffer.putInt(0755);
-//    // nlink
-//    rpcNfsBuffer.putInt(2);
-//    // uid
-//    rpcNfsBuffer.putInt(0);
-//    // gid
-//    rpcNfsBuffer.putInt(0);
-//    // size
-//    rpcNfsBuffer.putLong(4096);
-//    // used
-//    rpcNfsBuffer.putLong(4096);
-//    // rdev
-//    rpcNfsBuffer.putLong(0);
-//    // fsid
-//    rpcNfsBuffer.putInt(0x08c60040);  // fsid (major)
-//    rpcNfsBuffer.putInt(0x2b5cd8a8);  // fsid (minor)
-//    // fileid
-//    rpcNfsBuffer.putLong(fileId);
-//    // atime
-//    rpcNfsBuffer.putInt((int)(System.currentTimeMillis() / 1000));
-//    rpcNfsBuffer.putInt(0);
-//    // mtime
-//    rpcNfsBuffer.putInt((int)(System.currentTimeMillis() / 1000));
-//    rpcNfsBuffer.putInt(0);
-//    // ctime
-//    rpcNfsBuffer.putInt((int)(System.currentTimeMillis() / 1000));
-//    rpcNfsBuffer.putInt(0);
-//
-//    // count
-//    rpcNfsBuffer.putInt(dataLength);
-//    // eof
-//    rpcNfsBuffer.putInt(1);
-//    // data of length
-//    rpcNfsBuffer.putInt(dataLength);
-//    // data
-//    rpcNfsBuffer.put(payload);
 
     // Record marking
     int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
@@ -903,56 +862,59 @@ public class TcpServerVerticle extends AbstractVerticle {
     int stable = request.getInt(startOffset + 4 + fhandleLength + 8 + 4);
     int dataOfLength = request.getInt(startOffset + 4 + fhandleLength + 8);
     byte[] data = request.slice(startOffset + 4 + fhandleLength + 8 + 12,
-        startOffset + 4 + fhandleLength + 8 + 12 + count).getBytes();
+        startOffset + 4 + fhandleLength + 8 + 12 + dataOfLength).getBytes();
 
     log.info("NFS Write Reply: {}", new String(data, StandardCharsets.UTF_8));
 
     // Create reply
-    final int rpcMessageBodyLength = 24;
-    ByteBuffer rpcBodyBuffer = ByteBuffer.allocate(rpcMessageBodyLength);
-    rpcBodyBuffer.order(ByteOrder.BIG_ENDIAN);
+    final int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
+    ByteBuffer rpcBodyBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
 
-    // Standard RPC reply header
-    rpcBodyBuffer.putInt(xid);
-    rpcBodyBuffer.putInt(MSG_TYPE_REPLY);
-    rpcBodyBuffer.putInt(REPLY_STAT_MSG_ACCEPTED);
-    rpcBodyBuffer.putInt(VERF_FLAVOR_AUTH_NONE);
-    rpcBodyBuffer.putInt(VERF_LENGTH_ZERO);
-    rpcBodyBuffer.putInt(ACCEPT_STAT_SUCCESS);
+    PreOpAttr before = PreOpAttr.builder().attributesFollow(0).build();
+    PostOpAttr after = PostOpAttr.builder().attributesFollow(0).build();
+
+    WccData fileWcc = WccData.builder()
+      .before(before)
+      .after(after)
+      .build();
+
+    WRITE3resok write3resok = WRITE3resok.builder()
+      .fileWcc(fileWcc)
+      .count(count)
+      .committed(WRITE3resok.StableHow.DATA_SYNC)
+      .verifier(0L)
+      .build();
+
+    WRITE3res write3res = WRITE3res.createOk(write3resok);
 
     // NFS WRITE reply
-    int rpcNfsLength = 4 + // NFS3_OK
-              4 + // present flag
-              0 + // before - fattr3
-              4 + // present flag
-              0 + // after - fattr3
-              4 + // count
-              4 + // committed (stable_how)
-              8;  // verifier3
+    int rpcNfsLength = write3res.getSerializedSize();
 
     ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
     rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
 
-    // Status (NFS_OK = 0)
-    rpcNfsBuffer.putInt(0);
+    write3res.serialize(rpcNfsBuffer);
 
-    // before - fattr3 does not exist
-    rpcNfsBuffer.putInt(0);
-    // before - fattr3 does not exist
-    rpcNfsBuffer.putInt(0);
-
-    // count
-    rpcNfsBuffer.putInt(count);
-    // committed
-    rpcNfsBuffer.putInt(0); // FILE_SYNC
-    // verf
-    rpcNfsBuffer.putInt(0);
-    rpcNfsBuffer.putInt(0);
+//    // Status (NFS_OK = 0)
+//    rpcNfsBuffer.putInt(0);
+//
+//    // before - fattr3 does not exist
+//    rpcNfsBuffer.putInt(0);
+//    // before - fattr3 does not exist
+//    rpcNfsBuffer.putInt(0);
+//
+//    // count
+//    rpcNfsBuffer.putInt(count);
+//    // committed
+//    rpcNfsBuffer.putInt(0); // FILE_SYNC
+//    // verf
+//    rpcNfsBuffer.putInt(0);
+//    rpcNfsBuffer.putInt(0);
 
     // Record marking
-    int recordMarkValue = 0x80000000 | (rpcMessageBodyLength + rpcNfsLength);
+    int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
 
-    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcMessageBodyLength + rpcNfsLength);
+    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcHeaderLength + rpcNfsLength);
     fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
     fullResponseBuffer.putInt(recordMarkValue);
     fullResponseBuffer.put(rpcBodyBuffer.array());
@@ -1335,9 +1297,13 @@ public class TcpServerVerticle extends AbstractVerticle {
     log.info("ACCESS response - file type: {}, granted access: 0x{}",
       fileType, Integer.toHexString(accessFlags));
 
+    PostOpAttr objAttributes = PostOpAttr.builder()
+      .attributesFollow(1)
+      .attributes(dirAttr3)
+      .build();
+
     ACCESS3resok access3resok = ACCESS3resok.builder()
-      .objPresentFlag(1)
-      .objAttributes(dirAttr3)
+      .objAttributes(objAttributes)
       .accessFlags(accessFlags)
       .build();
 
@@ -2110,62 +2076,10 @@ public class TcpServerVerticle extends AbstractVerticle {
 
     // Calculate size for attributes
 
-
     int startIndex = (int) cookie;
     int currentSize = 0;
     int entriesToReturn = 0;
     int nameAttrSize = Nfs3Constant.NAME_ATTR_SIZE;
-
-    // Calculate how many entries we can fit within dircount bytes
-//    for (int i = startIndex; i < allEntries.size(); i++) {
-//        String entryName = allEntries.get(i);
-//          int entrySize = 4 + // fileid
-//                       4 + // name length
-//          entryName.length() + // name
-//                       8 + // cookie
-//                       4 + // name present
-//            nameAttrSize + // attributes
-//                       4;  // next entry present
-//
-//        log.info("Entry '{}' size: {} bytes, current total: {} bytes (dircount limit: {} bytes)",
-//                entryName, entrySize, currentSize + entrySize, dircount);
-//
-//        if (currentSize + entrySize > dircount) {
-//            log.info("Stopping at entry '{}' as it would exceed dircount limit of {} bytes", entryName, dircount);
-//            break;
-//        }
-//
-//        currentSize += entrySize;
-//        entriesToReturn++;
-//    }
-
-//    boolean isLastPage = (startIndex + entriesToReturn) >= allEntries.size();
-//
-//    int tmpDirFhandleLength = dirFhandleLength;
-//    // Calculate total size for entries to return
-//    int totalEntriesSize = 0;
-//    for (int i = startIndex; i < startIndex + entriesToReturn; i++) {
-//        String entry = allEntries.get(i);
-//        int entryNameLength = entry.length();
-//        totalEntriesSize += 8 + // fileid
-//            4 + // name length
-//            ((entryNameLength + 3) & ~3)   + // name (padded to 4 bytes)
-//            8 + // cookie
-//            4 + // name_attributes present flag
-//            nameAttrSize + // name_attributes
-//            4 + // name_handle present flag
-//            4 + // handle length
-//          tmpDirFhandleLength + // handle data
-//            4;  // nextentry present flag
-//    }
-
-//    int rpcNfsLength = 4 + // status
-//        4 + // dir_attributes present flag
-//        Nfs3Constant.DIR_ATTR_SIZE + // dir_attributes
-//        8 + // cookieverf
-//        4 + // entries present flag
-//        totalEntriesSize + // directory entries
-//        4;  // eof flag
 
     long currentTimeMillis = System.currentTimeMillis();
     int seconds = (int)(currentTimeMillis / 1000);
@@ -2254,9 +2168,13 @@ public class TcpServerVerticle extends AbstractVerticle {
 
     int entriesPresentFlag = entries.isEmpty() ? 0 : 1;
 
+    PostOpAttr dirAttributes = PostOpAttr.builder()
+      .attributesFollow(1)
+      .attributes(dirAttr)
+      .build();
+
     READDIRPLUS3resok readdirplus3resok = READDIRPLUS3resok.builder()
-      .dirAttrPresentFlag(1)
-      .dirAttr(dirAttr)
+      .dirAttributes(dirAttributes)
       .cookieverf(0L)
       .entriesPresentFlag(entriesPresentFlag)
       .entries(entries)

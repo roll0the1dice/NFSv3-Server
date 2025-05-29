@@ -10,19 +10,13 @@ import java.nio.ByteBuffer;
 @AllArgsConstructor
 @Builder
 public class LOOKUP3resfail {
-  int dirPresentFlag;
-  FAttr3 dirAttributes;
+  PostOpAttr dirAttributes;
 
   public void serialize(ByteBuffer buffer) {
-    buffer.putInt(dirPresentFlag);
-    if (dirPresentFlag != 0 && dirAttributes != null) {
-      dirAttributes.serialize(buffer);
-    }
+    dirAttributes.serialize(buffer);
   }
 
   public int getSerializedSize() {
-    // obj Present Flag
-    int t = dirPresentFlag != 0 ? FAttr3.getSerializedSize() : 4;
-    return 4 + t;
+    return dirAttributes.getSerializedSize();
   }
 }

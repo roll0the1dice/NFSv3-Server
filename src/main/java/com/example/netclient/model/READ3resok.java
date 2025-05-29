@@ -10,16 +10,14 @@ import java.nio.ByteBuffer;
 @AllArgsConstructor
 @Builder
 public class READ3resok {
-  int filePresentFlag;
-  FAttr3 fAttr3;
+  PostOpAttr fileAttributes;
   int count;
   int eof;
   int dataOfLength;
   byte[] data;
 
   public void serialize(ByteBuffer buffer) {
-    buffer.putInt(filePresentFlag);
-    fAttr3.serialize(buffer);
+    fileAttributes.serialize(buffer);
     buffer.putInt(count);
     buffer.putInt(eof);
     buffer.putInt(dataOfLength);

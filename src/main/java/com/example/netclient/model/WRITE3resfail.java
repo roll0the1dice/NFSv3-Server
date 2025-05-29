@@ -9,14 +9,14 @@ import java.nio.ByteBuffer;
 @Data
 @AllArgsConstructor
 @Builder
-public class ACCESS3resfail {
-  PostOpAttr dirAttributes;
+public class WRITE3resfail {
+  WccData fileWcc;
 
   public void serialize(ByteBuffer buffer) {
-    dirAttributes.serialize(buffer);
+    fileWcc.serialize(buffer);
   }
 
   public int getSerializedSize() {
-    return dirAttributes.getSerializedSize();
+    return fileWcc.getSerializedSize();
   }
 }

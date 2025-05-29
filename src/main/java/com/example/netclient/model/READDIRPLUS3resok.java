@@ -12,16 +12,14 @@ import java.util.List;
 @AllArgsConstructor
 @Builder
 public class READDIRPLUS3resok {
-  int dirAttrPresentFlag;
-  FAttr3 dirAttr;
+  PostOpAttr dirAttributes;
   long cookieverf;
   int entriesPresentFlag;
   List<Entryplus3> entries;
   int eof;
 
   public void serialize(ByteBuffer buffer) {
-    buffer.putInt(dirAttrPresentFlag);
-    dirAttr.serialize(buffer);
+    dirAttributes.serialize(buffer);
     buffer.putLong(cookieverf);
     buffer.putInt(entriesPresentFlag);
     for (Entryplus3 entry : entries) {
@@ -33,8 +31,7 @@ public class READDIRPLUS3resok {
   public int getSerializedSize() {
     int totalEntriesSize = entries != null && entries.isEmpty() ? 4 : entries.stream().map(entryplus3 -> entryplus3.getSerializedSize()).reduce(0, Integer::sum);
 
-    return 4 + // dir_attributes present flag
-      Nfs3Constant.DIR_ATTR_SIZE + // dir_attributes
+    return dirAttributes.getSerializedSize() + // dir_attributes
       8 + // cookieverf
       4 + // entries present flag
       totalEntriesSize + // directory entries
