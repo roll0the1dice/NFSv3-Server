@@ -23,7 +23,11 @@ import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -62,6 +66,9 @@ public class TcpServerVerticle extends AbstractVerticle {
   private static Map<Long, FAttr3> fileIdToFAttr3 = new ConcurrentHashMap<>();
   private static Map<ByteArrayKeyWrapper, FAttr3> fileHandleToFAttr3 = new ConcurrentHashMap<>();
   private static Map<ByteArrayKeyWrapper, ByteArrayKeyWrapper> fileHandleToParentFileHandle = new ConcurrentHashMap<>();
+  private static Map<ByteArrayKeyWrapper, List<ByteArrayKeyWrapper>> fileHandleToChildrenFileHandle = new ConcurrentHashMap<>();
+
+  private static final String STATIC_FILES_ROOT = "public";
 
   @Override
   public void start(Promise<Void> startPromise) throws Exception {
@@ -174,6 +181,15 @@ public class TcpServerVerticle extends AbstractVerticle {
     byte[] filehandle = NetTool.hexStringToByteArray(dataLiteral);
     ByteArrayKeyWrapper byteArrayKeyWrapper = new ByteArrayKeyWrapper(filehandle);
     fileHandleToFAttr3.put(byteArrayKeyWrapper, objAttributes);
+
+    Path staticRootPath = Paths.get(STATIC_FILES_ROOT);
+    if (!Files.exists(staticRootPath)) {
+      try {
+        Files.createDirectories(staticRootPath);
+      } catch (Exception e) {
+        return;
+      }
+    }
   }
 
   private void processCompleteMessage(NetSocket socket) {
@@ -736,33 +752,17 @@ public class TcpServerVerticle extends AbstractVerticle {
     long fileId = fileHandleToFileId.getOrDefault(new ByteArrayKeyWrapper(fhandle), 0x0000000002000002L);
     String filename = fileIdToFileName.getOrDefault(fileId, "/");
     int fileType =  getFileType(filename);
-    byte[] payload = "hello,world\n".getBytes(StandardCharsets.UTF_8);
-    int dataLength = payload.length;
+//    byte[] payload = "hello,world\n".getBytes(StandardCharsets.UTF_8);
+//    int dataLength = payload.length;
 
-    int seconds = (int)(System.currentTimeMillis() / 1000);
 
-    FAttr3 fAttr3 = FAttr3.builder()
-      .type(fileType)
-      .mode(0755)
-      .nlink(1)
-      .uid(0)
-      .gid(0)
-      .size(4096)
-      .used(4096)
-      .rdev(0)
-      .fsidMajor(0x08c60040)
-      .fsidMinor(0x2b5cd8a8)
-      .fileid(fileId)
-      .atimeSeconds(seconds)
-      .atimeNseconds(0)
-      .mtimeSeconds(seconds)
-      .mtimeNseconds(0)
-      .ctimeSeconds(seconds)
-      .ctimeNseconds(0)
-      .build();
+    Path staticRootPath = Paths.get(STATIC_FILES_ROOT);
+    byte[] data = Files.readAllBytes(staticRootPath.resolve(Base64.getUrlEncoder().withoutPadding().encodeToString(fhandle)));
+    int dataLength = data.length;
 
+    FAttr3 fAttr3 = fileHandleToFAttr3.getOrDefault(new ByteArrayKeyWrapper(fhandle), null);
     PostOpAttr fileAttributes = PostOpAttr.builder()
-      .attributesFollow(1)
+      .attributesFollow(fAttr3 != null ? 1 : 0)
       .attributes(fAttr3)
       .build();
 
@@ -771,7 +771,7 @@ public class TcpServerVerticle extends AbstractVerticle {
       .count(dataLength)
       .eof(1)
       .dataOfLength(dataLength)
-      .data(payload)
+      .data(data)
       .build();
 
     READ3res read3res = READ3res.createOk(read3resok);
@@ -810,8 +810,6 @@ public class TcpServerVerticle extends AbstractVerticle {
     final int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
     ByteBuffer rpcBodyBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
 
-    PreOpAttr before = PreOpAttr.builder().attributesFollow(0).build();
-
     ByteArrayKeyWrapper byteArrayKeyWrapper = new ByteArrayKeyWrapper(fhandle);
     fileHandleToFAttr3.computeIfPresent(byteArrayKeyWrapper, (key, value) -> {
       int used = (dataOfLength + 4096 - 1) / 4096 * 4096;
@@ -820,22 +818,34 @@ public class TcpServerVerticle extends AbstractVerticle {
       return value;
     });
 
-    FAttr3 attributes = fileHandleToFAttr3.get(byteArrayKeyWrapper);
-    PostOpAttr after = PostOpAttr.builder().attributesFollow(1).attributes(attributes).build();
+    Path staticRootPath = Paths.get(STATIC_FILES_ROOT);
+    Files.write(staticRootPath.resolve(Base64.getUrlEncoder().withoutPadding().encodeToString(fhandle)), data);
 
-    WccData fileWcc = WccData.builder()
-      .before(before)
-      .after(after)
-      .build();
+    WRITE3res write3res = null;
+    FAttr3 attributes = fileHandleToFAttr3.getOrDefault(byteArrayKeyWrapper, null);
 
-    WRITE3resok write3resok = WRITE3resok.builder()
-      .fileWcc(fileWcc)
-      .count(count)
-      .committed(WRITE3resok.StableHow.DATA_SYNC)
-      .verifier(0L)
-      .build();
+    if (attributes != null) {
+      PreOpAttr before = PreOpAttr.builder().attributesFollow(0).build();
+      PostOpAttr after = PostOpAttr.builder().attributesFollow(1).attributes(attributes).build();
 
-    WRITE3res write3res = WRITE3res.createOk(write3resok);
+      WccData fileWcc = WccData.builder().before(before).after(after).build();
+
+      WRITE3resok write3resok = WRITE3resok.builder()
+        .fileWcc(fileWcc)
+        .count(count)
+        .committed(WRITE3resok.StableHow.DATA_SYNC)
+        .verifier(0L)
+        .build();
+
+      write3res = WRITE3res.createOk(write3resok);
+    } else {
+      PreOpAttr before = PreOpAttr.builder().attributesFollow(0).build();
+      PostOpAttr after = PostOpAttr.builder().attributesFollow(0).build();
+      WccData fileWcc = WccData.builder().before(before).after(after).build();
+      WRITE3resfail failData = WRITE3resfail.builder().fileWcc(fileWcc).build();
+
+      write3res = WRITE3res.createFail(NfsStat3.NFS3ERR_BADHANDLE, failData);
+    }
 
     // NFS WRITE reply
     int rpcNfsLength = write3res.getSerializedSize();
@@ -1493,6 +1503,13 @@ public class TcpServerVerticle extends AbstractVerticle {
     fileIdToFAttr3.put(fileId, attributes);
     fileHandleToFAttr3.put(new ByteArrayKeyWrapper(fileHandle), attributes);
     fileHandleToParentFileHandle.put(new ByteArrayKeyWrapper(fileHandle), new ByteArrayKeyWrapper(dirFhandle));
+    fileHandleToChildrenFileHandle.compute(new ByteArrayKeyWrapper(dirFhandle), (key, value) -> {
+      if (value == null) {
+        value = new ArrayList<>();
+      }
+      boolean add = value.add(new ByteArrayKeyWrapper(fileHandle));
+      return value;
+    });
 
     // Record marking
     int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
@@ -1966,10 +1983,14 @@ public class TcpServerVerticle extends AbstractVerticle {
     ByteBuffer rpcHeaderBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
 
     // Define directory entries (simulating a large directory)
-    List<String> allEntries = fileIdToFileName.entrySet().stream().map(Map.Entry::getValue).collect(Collectors.toList());
+//    List<String> allEntries = fileHandleToChildrenFileHandle.getOrDefault(new ByteArrayKeyWrapper(dirFhandle), new ArrayList<>())
+//      .stream()
+//      .map(key -> fileHandleToFileName.getOrDefault(key, ""))
+//      .filter(s -> !s.isEmpty())
+//      .collect(Collectors.toList());
 
+    List<ByteArrayKeyWrapper> allEntries = fileHandleToChildrenFileHandle.getOrDefault(new ByteArrayKeyWrapper(dirFhandle), new ArrayList<>());
     // Calculate size for attributes
-
     int startIndex = (int) cookie;
     int currentSize = 0;
     int entriesToReturn = 0;
@@ -1982,7 +2003,8 @@ public class TcpServerVerticle extends AbstractVerticle {
     List<Entryplus3> entries = new ArrayList<>();
 
     for (int i = 0; i < allEntries.size(); i++) {
-      String entryName = allEntries.get(i);
+      ByteArrayKeyWrapper keyWrapper = allEntries.get(i);
+      String entryName = fileHandleToFileName.getOrDefault(keyWrapper, "");
       int entryNameLength = entryName.length();
       long fileId = getFileId(entryName);
       byte[] nameBytes = entryName.getBytes(StandardCharsets.UTF_8);
@@ -1998,37 +2020,17 @@ public class TcpServerVerticle extends AbstractVerticle {
       log.info("Entry '{}' size: {} bytes, current total: {} bytes (dircount limit: {} bytes)",
         entryName, entryNameLength, currentSize, dircount);
 
-      int fileType = getFileType(entryName);
-      FAttr3 nameAttr = FAttr3.builder()
-        .type(fileType)
-        .mode(0x000001ED)
-        .nlink(1)
-        .uid(0)
-        .gid(0)
-        .size(4096)
-        .used(4096)
-        .rdev(0)
-        .fsidMajor(0x08c60040)
-        .fsidMinor(0x2b5cd8a8)
-        .fileid(fileId)
-        .atimeSeconds(seconds)
-        .atimeNseconds(nseconds)
-        .mtimeSeconds(seconds)
-        .mtimeNseconds(nseconds)
-        .ctimeSeconds(seconds)
-        .mtimeNseconds(nseconds)
-        .build();
-
+      FAttr3 nameAttr = fileHandleToFAttr3.getOrDefault(keyWrapper, null);
       Entryplus3 entryplus3 = Entryplus3.builder()
         .fileid(fileId)
         .fileNameLength(entryNameLength)
         .fileName(nameBytes)
         .cookie(nextCookie)
-        .nameAttrPresent(1)
+        .nameAttrPresent(nameAttr != null ? 1 : 0)
         .nameAttr(nameAttr)
         .nameHandlePresent(1)
-        .nameHandleLength(dirFhandleLength)
-        .nameHandle(dirFhandle)
+        .nameHandleLength(keyWrapper.getData().length)
+        .nameHandle(keyWrapper.getData())
         .nextEntryPresent(i == allEntries.size() - 1 ? 0 : 1)
         .build();
 
@@ -2040,33 +2042,9 @@ public class TcpServerVerticle extends AbstractVerticle {
     log.info("Will return {} entries starting from index {} (total size: {} bytes)",
       entries.size(), 0, currentSize);
 
-    FAttr3 dirAttr = FAttr3.builder()
-      .type(2)
-      .mode(0x000001ED)
-      .nlink(1)
-      .uid(0)
-      .gid(0)
-      .size(4096)
-      .used(4096)
-      .rdev(0)
-      .fsidMajor(0x08c60040)
-      .fsidMinor(0x2b5cd8a8)
-      .fileid(0x0000000002000002L)
-      .atimeSeconds(seconds)
-      .atimeNseconds(nseconds)
-      .mtimeSeconds(seconds)
-      .mtimeNseconds(nseconds)
-      .ctimeSeconds(seconds)
-      .mtimeNseconds(nseconds)
-      .build();
-
+    FAttr3 dirAttr = fileHandleToFAttr3.getOrDefault(new ByteArrayKeyWrapper(dirFhandle), null);
     int entriesPresentFlag = entries.isEmpty() ? 0 : 1;
-
-    PostOpAttr dirAttributes = PostOpAttr.builder()
-      .attributesFollow(1)
-      .attributes(dirAttr)
-      .build();
-
+    PostOpAttr dirAttributes = PostOpAttr.builder().attributesFollow(1).attributes(dirAttr).build();
     READDIRPLUS3resok readdirplus3resok = READDIRPLUS3resok.builder()
       .dirAttributes(dirAttributes)
       .cookieverf(0L)

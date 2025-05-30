@@ -29,8 +29,7 @@ public class READ3resok implements SerializablePayload {
 
   @Override
   public int getSerializedSize() {
-    return 4 + // object handle length
-      fileAttributes.getSerializedSize() + // rtmax
+    return fileAttributes.getSerializedSize() + //
       4 + // count
       4 + // eof
       4 + // dataOfLength
