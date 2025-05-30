@@ -141,8 +141,14 @@ public class UpDownHttpClient {
 //        error -> log.error("Upload and close operation FAILED.", error)
 //      );
 
-    upDownHttpClient.put(targetUrl, Flowable.just(Buffer.buffer("hello,world!")))
+    Single<Buffer> bufferSingle = upDownHttpClient.get(targetUrl);
+    int datalength = bufferSingle
+      .flatMap(buffer -> {
+        return Single.just(buffer.length());
+      })
       .blockingGet();
+
+    System.out.println(datalength);
 
     //subscribe.dispose();
   }

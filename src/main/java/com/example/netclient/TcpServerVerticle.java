@@ -10,6 +10,7 @@ import com.example.netclient.utils.EnumUtil;
 import com.example.netclient.utils.NetTool;
 import com.example.netclient.utils.RpcUtil;
 import io.reactivex.Flowable;
+import io.reactivex.Single;
 import io.vertx.core.Promise;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.net.NetServerOptions;
@@ -437,22 +438,22 @@ public class TcpServerVerticle extends AbstractVerticle {
           flowableXdrReplyBytes = createNfsNullReply(xid);
           break;
         case NFSPROC_GETATTR:
-          xdrReplyBytes = createNfsGetAttrReply(xid, buffer, startOffset);
+          flowableXdrReplyBytes = createNfsGetAttrReply(xid, buffer, startOffset);
           break;
         case NFSPROC_SETATTR:
-          xdrReplyBytes = createNfsSetAttrReply(xid, buffer, startOffset);
+          flowableXdrReplyBytes = createNfsSetAttrReply(xid, buffer, startOffset);
           break;
         case NFSPROC_LOOKUP:
-          xdrReplyBytes = createNfsLookupReply(xid, buffer, startOffset);
+          flowableXdrReplyBytes = createNfsLookupReply(xid, buffer, startOffset);
           break;
         case NFSPROC_ACCESS:
-          xdrReplyBytes = createNfsAccessReply(xid, buffer, startOffset);
+          flowableXdrReplyBytes = createNfsAccessReply(xid, buffer, startOffset);
           break;
         case NFSPROC_READLINK:
           xdrReplyBytes = createNfsReadLinkReply(xid, buffer, startOffset);
           break;
         case NFSPROC_READ:
-          xdrReplyBytes = createNfsReadReply(xid, buffer, startOffset);
+          flowableXdrReplyBytes = createNfsReadReply(xid, buffer, startOffset);
           break;
         case NFSPROC_WRITE:
           xdrReplyBytes = createNfsWriteReply(xid, buffer, startOffset);
@@ -521,14 +522,14 @@ public class TcpServerVerticle extends AbstractVerticle {
     }
   }
 
-  private byte[] createNfsGetAttrReply(int xid, Buffer request, int startOffset) throws IOException {
+  private Flowable<Buffer> createNfsGetAttrReply(int xid, Buffer request, int startOffset) throws IOException {
     // Parse file handle from request
     int fhandleLength = request.getInt(startOffset);
     byte[] fhandle = request.slice(startOffset + 4, startOffset + 4 + fhandleLength).getBytes();
 
     // Create reply
     final int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
-    ByteBuffer rpcHeaderBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
+    Flowable<Buffer> rpcHeaderBuffer = RpcUtil.writeAcceptedSuccessReplyHeader(xid);
 
     // NFS GETATTR reply
     // Structure:
@@ -564,24 +565,18 @@ public class TcpServerVerticle extends AbstractVerticle {
     GETATTR3res getattr3res = GETATTR3res.createSuccess(getattr3resok);
 
     int rpcNfsLength = getattr3res.getSerializedSize();
-    ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
-    rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
-
-     getattr3res.serialize(rpcNfsBuffer);
+    Flowable<Buffer> rpcNfsBuffer = getattr3res.serializeToFlowable();
 
     // Record marking
     int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
 
-    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcHeaderLength + rpcNfsLength);
-    fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
-    fullResponseBuffer.putInt(recordMarkValue);
-    fullResponseBuffer.put(rpcHeaderBuffer.array());
-    fullResponseBuffer.put(rpcNfsBuffer.array());
+    Buffer recordMarkBuffer = Buffer.buffer(4).appendInt(recordMarkValue);
+    Flowable<Buffer> fullResponseBuffer = Flowable.concat(Flowable.just(recordMarkBuffer), rpcHeaderBuffer, rpcNfsBuffer);
 
-    return fullResponseBuffer.array();
+    return fullResponseBuffer;
   }
 
-  private byte[] createNfsLookupReply(int xid, Buffer request, int startOffset) throws IOException {
+  private Flowable<Buffer> createNfsLookupReply(int xid, Buffer request, int startOffset) throws IOException {
     // Parse directory file handle and name from request
     int dirFhandleLength = request.getInt(startOffset);
     byte[] dirFhandle = request.slice(startOffset + 4, startOffset + 4 + dirFhandleLength).getBytes();
@@ -593,7 +588,7 @@ public class TcpServerVerticle extends AbstractVerticle {
 
     // Create reply
     int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
-    ByteBuffer rpcHeaderBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
+    Flowable<Buffer> rpcHeaderBuffer = RpcUtil.writeAcceptedSuccessReplyHeader(xid);
 
     // Generate a unique file handle based on the name
     byte[] fileHandle = getFileHandle(name, false);
@@ -639,21 +634,14 @@ public class TcpServerVerticle extends AbstractVerticle {
 
     int rpcNfsLength = lookup3res.getSerializedSize();
 
-    ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
-    rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
-
-    lookup3res.serialize(rpcNfsBuffer);
+    Flowable<Buffer> rpcNfsBuffer = lookup3res.serializeToFlowable();
 
     // Record marking
     int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
+    Buffer buffer = Buffer.buffer(4).appendInt(recordMarkValue);
+    Flowable<Buffer> fullResponseBuffer = Flowable.concat(Flowable.just(buffer), rpcHeaderBuffer, rpcNfsBuffer);
 
-    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcHeaderLength + rpcNfsLength);
-    fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
-    fullResponseBuffer.putInt(recordMarkValue);
-    fullResponseBuffer.put(rpcHeaderBuffer.array());
-    fullResponseBuffer.put(rpcNfsBuffer.array());
-
-    return fullResponseBuffer.array();
+    return fullResponseBuffer;
   }
 
   private byte[] getFileHandle(String name, boolean createFlag) {
@@ -736,7 +724,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     return ((long)hash << 32) | (timestamp & 0xFFFFFFFFL);
   }
 
-  private byte[] createNfsReadReply(int xid, Buffer request, int startOffset) throws IOException {
+  private Flowable<Buffer> createNfsReadReply(int xid, Buffer request, int startOffset) throws IOException, URISyntaxException {
     // Parse file handle, offset, and count from request
     int fhandleLength = request.getInt(startOffset);
     byte[] fhandle = request.slice(startOffset + 4, startOffset + 4 + fhandleLength).getBytes();
@@ -747,7 +735,7 @@ public class TcpServerVerticle extends AbstractVerticle {
 
     // Create reply
     final int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
-    ByteBuffer rpcBodyBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
+    Flowable<Buffer> rpcHeaderBuffer = RpcUtil.writeAcceptedSuccessReplyHeader(xid);
 
     long fileId = fileHandleToFileId.getOrDefault(new ByteArrayKeyWrapper(fhandle), 0x0000000002000002L);
     String filename = fileIdToFileName.getOrDefault(fileId, "/");
@@ -757,19 +745,10 @@ public class TcpServerVerticle extends AbstractVerticle {
 
     byte[] data = new byte[0];
     String targetUrl = String.format("http://%s/%s/%s", S3HOST, BUCKET, filename);
-    try {
-      Buffer buffer1 = upDownHttpClient.get(targetUrl).blockingGet();
-      data = buffer1.getBytes();
-    } catch (URISyntaxException e) {
-      throw new RuntimeException(e);
-    }
-    int dataLength = data.length;
 
-
-
-//    Path staticRootPath = Paths.get(STATIC_FILES_ROOT);
-//    byte[] data = Files.readAllBytes(staticRootPath.resolve(Base64.getUrlEncoder().withoutPadding().encodeToString(fhandle)));
-//    int dataLength = data.length;
+    Single<Buffer> bufferSingle =  upDownHttpClient.get(targetUrl);
+    int dataLength = bufferSingle.map(Buffer::length).blockingGet();
+    data = bufferSingle.blockingGet().getBytes();
 
     FAttr3 fAttr3 = fileHandleToFAttr3.getOrDefault(new ByteArrayKeyWrapper(fhandle), null);
     PostOpAttr fileAttributes = PostOpAttr.builder()
@@ -788,20 +767,14 @@ public class TcpServerVerticle extends AbstractVerticle {
     READ3res read3res = READ3res.createOk(read3resok);
 
     int rpcNfsLength = read3res.getSerializedSize();
-    ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
-    rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
-    read3res.serialize(rpcNfsBuffer);
+    Flowable<Buffer> rpcNfsBuffer = read3res.serializeToFlowable();
 
     // Record marking
     int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
+    Buffer recordMarkBuffer = Buffer.buffer(4).appendInt(recordMarkValue);
+    Flowable<Buffer> fullResponseBuffer = Flowable.concat(Flowable.just(recordMarkBuffer), rpcHeaderBuffer, rpcNfsBuffer);
 
-    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcHeaderLength + rpcNfsLength);
-    fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
-    fullResponseBuffer.putInt(recordMarkValue);
-    fullResponseBuffer.put(rpcBodyBuffer.array());
-    fullResponseBuffer.put(rpcNfsBuffer.array());
-
-    return fullResponseBuffer.array();
+    return fullResponseBuffer;
   }
 
   private byte[] createNfsWriteReply(int xid, Buffer request, int startOffset) throws IOException, URISyntaxException {
@@ -1082,7 +1055,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     return fullResponseBuffer.array();
   }
 
-  private byte[] createNfsSetAttrReply(int xid, Buffer request, int startOffset) throws IOException, IllegalAccessException {
+  private Flowable<Buffer> createNfsSetAttrReply(int xid, Buffer request, int startOffset) throws IOException, IllegalAccessException {
     // Parse file handle from request
     //int fhandleLength = request.getInt(startOffset);
     //byte[] fhandle = request.slice(startOffset + 4, startOffset + 4 + fhandleLength).getBytes();
@@ -1090,8 +1063,8 @@ public class TcpServerVerticle extends AbstractVerticle {
     SETATTR3args setattr3args = SETATTR3args.deserialize(requestByteData);
 
     // Create reply
-    final int rpcMessageBodyLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
-    ByteBuffer rpcBodyBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
+    final int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
+    Flowable<Buffer> rpcHeaderBuffer = RpcUtil.writeAcceptedSuccessReplyHeader(xid);
 
     // NFS SETATTR reply
     // Structure:
@@ -1156,24 +1129,17 @@ public class TcpServerVerticle extends AbstractVerticle {
     SETATTR3res setattr3res = SETATTR3res.createSuccess(setattr3resok);
 
     int rpcNfsLength = setattr3res.getSerializedSize();
-    ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
-    rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
-
-    setattr3res.serialize(rpcNfsBuffer);
+    Flowable<Buffer> rpcNfsBuffer = setattr3res.serializeToFlowable();
 
     // Record marking
-    int recordMarkValue = 0x80000000 | (rpcMessageBodyLength + rpcNfsLength);
+    int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
+    Buffer buffer = Buffer.buffer(4).appendInt(recordMarkValue);
+    Flowable<Buffer> fullResponseBuffer = Flowable.concat(Flowable.just(buffer), rpcHeaderBuffer, rpcNfsBuffer);
 
-    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcMessageBodyLength + rpcNfsLength);
-    fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
-    fullResponseBuffer.putInt(recordMarkValue);
-    fullResponseBuffer.put(rpcBodyBuffer.array());
-    fullResponseBuffer.put(rpcNfsBuffer.array());
-
-    return fullResponseBuffer.array();
+    return fullResponseBuffer;
   }
 
-  private byte[] createNfsAccessReply(int xid, Buffer request, int startOffset) throws IOException {
+  private Flowable<Buffer> createNfsAccessReply(int xid, Buffer request, int startOffset) throws IOException {
     // Parse file handle from request
     int fhandleLength = request.getInt(startOffset);
     byte[] fhandle = request.slice(startOffset + 4, startOffset + 4 + fhandleLength).getBytes();
@@ -1185,7 +1151,7 @@ public class TcpServerVerticle extends AbstractVerticle {
 
     // Create reply
     int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
-    ByteBuffer rpcHeaderBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
+    Flowable<Buffer> rpcHeaderBuffer = RpcUtil.writeAcceptedSuccessReplyHeader(xid);
 
     // NFS ACCESS reply
     // Determine file type from handle
@@ -1239,21 +1205,14 @@ public class TcpServerVerticle extends AbstractVerticle {
     ACCESS3res access3res = ACCESS3res.createOk(access3resok);
 
     int rpcNfsLength = access3res.getSerializedSize();
-    ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
-    rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
-
-    access3res.serialize(rpcNfsBuffer);
+    Flowable<Buffer> rpcNfsBuffer = access3res.serializeToFlowable();
 
     // Record marking
     int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
+    Buffer buffer = Buffer.buffer(4).appendInt(recordMarkValue);
+    Flowable<Buffer> fullResponseBuffer = Flowable.concat(Flowable.just(buffer), rpcHeaderBuffer, rpcNfsBuffer);
 
-    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcHeaderLength + rpcNfsLength);
-    fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
-    fullResponseBuffer.putInt(recordMarkValue);
-    fullResponseBuffer.put(rpcHeaderBuffer.array());
-    fullResponseBuffer.put(rpcNfsBuffer.array());
-
-    return fullResponseBuffer.array();
+    return fullResponseBuffer;
   }
 
   private byte[] createNfsReadLinkReply(int xid, Buffer request, int startOffset) {
