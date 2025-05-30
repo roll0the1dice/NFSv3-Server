@@ -1,6 +1,7 @@
 package com.example.netclient.model;
 
 import com.example.netclient.enums.Nfs3Constant;
+import io.vertx.core.buffer.Buffer;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -38,6 +39,17 @@ public class READDIRPLUS3resok implements SerializablePayload {
       4 + // entries present flag
       totalEntriesSize + // directory entries
       4; // eof flag
+  }
+
+  @Override
+  public void serialize(Buffer buffer) {
+    dirAttributes.serialize(buffer);
+    buffer.appendLong(cookieverf);
+    buffer.appendInt(entriesPresentFlag);
+    for (Entryplus3 entry : entries) {
+      entry.serialize(buffer);
+    }
+    buffer.appendInt(eof);
   }
 
 }

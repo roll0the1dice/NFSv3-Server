@@ -1,5 +1,6 @@
 package com.example.netclient.model;
 
+import io.vertx.core.buffer.Buffer;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -34,5 +35,16 @@ public class PATHCONF3resok implements SerializablePayload {
   public int getSerializedSize() {
     return objAttributes.getSerializedSize() + //
       24;
+  }
+
+  @Override
+  public void serialize(Buffer buffer) {
+    objAttributes.serialize(buffer);
+    buffer.appendInt(linkmax);
+    buffer.appendInt(nameMax);
+    buffer.appendInt(noTrunc);
+    buffer.appendInt(chownRestricted);
+    buffer.appendInt(caseInsensitive);
+    buffer.appendInt(casePreserving);
   }
 }

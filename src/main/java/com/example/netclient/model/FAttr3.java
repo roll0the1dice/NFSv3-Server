@@ -1,6 +1,7 @@
 package com.example.netclient.model;
 
 import com.example.netclient.enums.Nfs3Constant;
+import io.vertx.core.buffer.Buffer;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -54,6 +55,27 @@ public class FAttr3 implements SerializablePayload {
   @Override
   public int getSerializedSize() {
     return Nfs3Constant.FILE_ATTR_SIZE;
+  }
+
+  @Override
+  public void serialize(Buffer buffer) {
+    buffer.appendInt(type);
+    buffer.appendInt(mode);
+    buffer.appendInt(nlink);
+    buffer.appendInt(uid);
+    buffer.appendInt(gid);
+    buffer.appendLong(size);
+    buffer.appendLong(used);
+    buffer.appendLong(rdev);
+    buffer.appendInt(fsidMajor);
+    buffer.appendInt(fsidMinor);
+    buffer.appendLong(fileid);
+    buffer.appendInt(atimeSeconds);
+    buffer.appendInt(atimeNseconds);
+    buffer.appendInt(mtimeSeconds);
+    buffer.appendInt(mtimeNseconds);
+    buffer.appendInt(ctimeSeconds);
+    buffer.appendInt(ctimeNseconds);
   }
 
 }

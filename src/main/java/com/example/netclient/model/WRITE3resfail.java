@@ -1,5 +1,6 @@
 package com.example.netclient.model;
 
+import io.vertx.core.buffer.Buffer;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -20,5 +21,10 @@ public class WRITE3resfail implements SerializablePayload {
   @Override
   public int getSerializedSize() {
     return fileWcc.getSerializedSize();
+  }
+
+  @Override
+  public void serialize(Buffer buffer) {
+    fileWcc.serialize(buffer);
   }
 }

@@ -1,5 +1,6 @@
 package com.example.netclient.model;
 
+import io.vertx.core.buffer.Buffer;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -34,5 +35,16 @@ public class READ3resok implements SerializablePayload {
       4 + // eof
       4 + // dataOfLength
       ((dataOfLength + 4 - 1) / 4 * 4); // data
+  }
+
+  @Override
+  public void serialize(Buffer buffer) {
+    fileAttributes.serialize(buffer);
+    buffer.appendInt(count);
+    buffer.appendInt(eof);
+    buffer.appendInt(dataOfLength);
+    buffer.appendBytes(data);
+    int padding = (dataOfLength + 4 - 1) / 4 * 4 - dataOfLength;
+    for (int i = 0; i < padding; i++) buffer.appendByte((byte) 0);
   }
 }

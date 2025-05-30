@@ -1,6 +1,9 @@
 package com.example.netclient.model;
 
 import com.example.netclient.enums.NfsStat3;
+import io.reactivex.Flowable;
+import io.vertx.core.buffer.Buffer;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 
@@ -46,6 +49,46 @@ public class AbstractNfsResponse <OK_TYPE extends SerializablePayload, FAIL_TYPE
         }
         resfail.serialize(buffer);
     }
+  }
+
+  public final void serialize(Buffer buffer) throws IOException {
+    buffer.appendInt(status.getCode());
+
+    switch (status) {
+      case NFS3_OK:
+        if (resok == null) {
+          throw new IllegalArgumentException("resok must be not null when status is NFS3_OK");
+        }
+        resok.serialize(buffer);
+        break;
+      default:
+        if (resfail == null) {
+          throw new IllegalArgumentException("resfail must be not null when status is not NFS3_OK");
+        }
+        resfail.serialize(buffer);
+    }
+  }
+
+  public final Flowable<Buffer> serializeToFlowable() throws IOException {
+    int bufferLength = getSerializedSize();
+    Buffer buffer = Buffer.buffer(bufferLength);
+
+    buffer.appendInt(status.getCode());
+    switch (status) {
+      case NFS3_OK:
+        if (resok == null) {
+          throw new IllegalArgumentException("resok must be not null when status is NFS3_OK");
+        }
+        resok.serialize(buffer);
+        break;
+      default:
+        if (resfail == null) {
+          throw new IllegalArgumentException("resfail must be not null when status is not NFS3_OK");
+        }
+        resfail.serialize(buffer);
+    }
+
+    return Flowable.just(buffer);
   }
 
   public final int getSerializedSize() {

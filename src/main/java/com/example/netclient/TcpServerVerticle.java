@@ -299,7 +299,7 @@ public class TcpServerVerticle extends AbstractVerticle {
   private static final int VERF_LENGTH_ZERO = 0;        // 0x00000000
   private static final int ACCEPT_STAT_SUCCESS = 0;     // 0x00000000
 
-  public static byte[] createNfsNullReply(int requestXid) {
+  public static Flowable<Buffer> createNfsNullReply(int requestXid) {
     // --- Calculate RPC Message Body Length ---
     // XID (4 bytes)
     // Message Type (4 bytes)
@@ -308,51 +308,24 @@ public class TcpServerVerticle extends AbstractVerticle {
     // Verifier Length (4 bytes)
     // Acceptance Status (4 bytes)
     // Total = 6 * 4 = 24 bytes
-    final int rpcMessageBodyLength = 24;
-
+    final int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
     // --- Create ByteBuffer for the RPC Message Body ---
     // We will fill this first, then prepend the record mark.
-    ByteBuffer rpcBodyBuffer = ByteBuffer.allocate(rpcMessageBodyLength);
-    rpcBodyBuffer.order(ByteOrder.BIG_ENDIAN); // XDR is Big Endian
-
-    // 1. XID (Transaction Identifier) - from request
-    rpcBodyBuffer.putInt(requestXid);
-
-    // 2. Message Type (mtype)
-    rpcBodyBuffer.putInt(MSG_TYPE_REPLY);
-
-    // 3. Reply Body (reply_body)
-    //    3.1. Reply Status (stat of union switch (msg_type mtype))
-    rpcBodyBuffer.putInt(REPLY_STAT_MSG_ACCEPTED);
-
-    //    3.2. Accepted Reply (areply)
-    //        3.2.1. Verifier (verf - opaque_auth structure)
-    rpcBodyBuffer.putInt(VERF_FLAVOR_AUTH_NONE); // Flavor
-    rpcBodyBuffer.putInt(VERF_LENGTH_ZERO);      // Length of body (0 for AUTH_NONE)
-    // Body is empty
-
-    //        3.2.2. Acceptance Status (stat of union switch (accept_stat stat))
-    rpcBodyBuffer.putInt(ACCEPT_STAT_SUCCESS);
-
+    Flowable<Buffer> rpcHeaderBuffer = RpcUtil.writeAcceptedSuccessReplyHeader(requestXid);
     //        3.2.3. Results (for NFSPROC3_NULL, this is void, so no data)
 
     // --- Construct Record Marking ---
     // Highest bit set (0x80000000) ORed with the length of the RPC message body.
     // In Java, an int is 32-bit.
-    int recordMarkValue = 0x80000000 | rpcMessageBodyLength;
+    int recordMarkValue = 0x80000000 | rpcHeaderLength;
 
     // --- Create ByteBuffer for the Full XDR Response ---
     // Record Mark (4 bytes) + RPC Message Body (rpcMessageBodyLength bytes)
-    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcMessageBodyLength);
-    fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
-
-    // Put the record mark
-    fullResponseBuffer.putInt(recordMarkValue);
-    // Put the RPC message body (which is already in rpcBodyBuffer)
-    fullResponseBuffer.put(rpcBodyBuffer.array()); // .array() gets the underlying byte array
+    Buffer recordMarkBuffer = Buffer.buffer(4).appendInt(recordMarkValue);
+    Flowable<Buffer> fullResponseBuffer = Flowable.concat(Flowable.just(recordMarkBuffer), rpcHeaderBuffer);
 
     // Return the complete byte array
-    return fullResponseBuffer.array();
+    return fullResponseBuffer;
   }
   // Helper method to print byte array as hex string for verification
   public static String bytesToHex(byte[] bytes) {
@@ -458,9 +431,10 @@ public class TcpServerVerticle extends AbstractVerticle {
       Nfs3Procedure procedureNumberEnum = EnumUtil.fromCode(Nfs3Procedure.class, procedureNumber);
 
       byte[] xdrReplyBytes = null;
+      Flowable<Buffer> flowableXdrReplyBytes = null;
       switch (procedureNumberEnum) {
         case NFSPROC_NULL:
-          xdrReplyBytes = createNfsNullReply(xid);
+          flowableXdrReplyBytes = createNfsNullReply(xid);
           break;
         case NFSPROC_GETATTR:
           xdrReplyBytes = createNfsGetAttrReply(xid, buffer, startOffset);
@@ -536,18 +510,11 @@ public class TcpServerVerticle extends AbstractVerticle {
 
         Flowable<Buffer> replyBuffer = Flowable.just(Buffer.buffer(xdrReplyBytes));
 
-//        log.info("Raw response buffer (" + buffer.length() + " bytes):");
-//        // 简单的十六进制打印
-//        for (int i = 0; i < replyBuffer.length(); i++) {
-//          System.out.printf("%02X ", replyBuffer.getByte(i));
-//          if ((i + 1) % 16 == 0 || i == replyBuffer.length() - 1) {
-//            System.out.println();
-//          }
-//        }
-//        log.info("---- End of Raw response Buffer ----");
         Subscriber<Buffer> socketSubscriber = socket.toSubscriber();
-        //socket.write(replyBuffer);
         replyBuffer.safeSubscribe(socketSubscriber);
+      } else if (xdrReplyBytes == null) {
+        Subscriber<Buffer> socketSubscriber = socket.toSubscriber();
+        flowableXdrReplyBytes.safeSubscribe(socketSubscriber);
       }
     } catch (Exception e) {
       log.error("Error processing NFS request", e);
@@ -600,7 +567,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
     rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
 
-    getattr3res.serialize(rpcNfsBuffer);
+     getattr3res.serialize(rpcNfsBuffer);
 
     // Record marking
     int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
@@ -1022,12 +989,13 @@ public class TcpServerVerticle extends AbstractVerticle {
       startOffset += 8; // Skip verifier
 
       byte[] xdrReplyBytes = null;
+      Flowable<Buffer> flowableXdrReplyBytes = null;
       switch (procedureNumber) {
         case NFSPROC_ACL_NULL:
-          xdrReplyBytes = createNfsNullReply(xid);
+          flowableXdrReplyBytes = createNfsNullReply(xid);
           break;
         case NFSPROC_ACL_GETACL:
-          xdrReplyBytes = createNfsACLGetACLReply(xid, buffer, startOffset);
+          flowableXdrReplyBytes = createNfsACLGetACLReply(xid, buffer, startOffset);
           break;
         case NFSPROC_ACL_SETACL:
           xdrReplyBytes = createNfsACLSetACLReply(xid, buffer, startOffset);
@@ -1038,33 +1006,26 @@ public class TcpServerVerticle extends AbstractVerticle {
       }
 
       if (xdrReplyBytes != null) {
-        log.info("Sending NFS_ACL response - XID: 0x{}, Size: {} bytes",
-            Integer.toHexString(xid), xdrReplyBytes.length);
-        socket.write(Buffer.buffer(xdrReplyBytes));
+        Flowable<Buffer> flowable = Flowable.just(Buffer.buffer(xdrReplyBytes));
+        Subscriber<Buffer> socketSubscriber = socket.toSubscriber();
+        flowable.safeSubscribe(socketSubscriber);
+      } else if (flowableXdrReplyBytes != null) {
+        Subscriber<Buffer> socketSubscriber = socket.toSubscriber();
+        flowableXdrReplyBytes.safeSubscribe(socketSubscriber);
       }
     } catch (Exception e) {
       log.error("Error processing NFS_ACL request", e);
     }
   }
 
-  private byte[] createNfsACLGetACLReply(int xid, Buffer request, int startOffset) throws IOException {
+  private Flowable<Buffer> createNfsACLGetACLReply(int xid, Buffer request, int startOffset) throws IOException {
     // Parse file handle from request
     int fhandleLength = request.getInt(startOffset);
     byte[] fhandle = request.slice(startOffset + 4, startOffset + 4 + fhandleLength).getBytes();
 
     // Create reply
     final int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
-    ByteBuffer rpcBodyBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
-
-    // NFS_ACL GETACL reply
-    // Structure:
-    // status (4 bytes)
-    // post_op_attr present flag (4 bytes)
-    // acl_count (4 bytes)
-    // acl_entries (variable length)
-//    int rpcNfsLength = 4 + // status
-//        4 + // post_op_attr present flag
-//        4;  // acl_count (0 for now)
+    Flowable<Buffer> rpcHeaderBuffer = RpcUtil.writeAcceptedSuccessReplyHeader(xid);
 
     PostOpAttr postOpAttr = PostOpAttr.builder().attributesFollow(0).build();
     GETACL3resfail getacl3resfail = GETACL3resfail.builder().objAttributes(postOpAttr).build();
@@ -1072,21 +1033,15 @@ public class TcpServerVerticle extends AbstractVerticle {
     GETACL3res getacl3res = GETACL3res.createFailure(NfsStat3.NFS3ERR_NOTSUPP, getacl3resfail);
 
     int rpcNfsLength = getacl3res.getSerializedSize();
-    ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
-    rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
-
-    getacl3res.serialize(rpcNfsBuffer);
+    Flowable<Buffer> rpcNfsBuffer = getacl3res.serializeToFlowable();
 
     // Record marking
     int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
 
-    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcHeaderLength + rpcNfsLength);
-    fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
-    fullResponseBuffer.putInt(recordMarkValue);
-    fullResponseBuffer.put(rpcBodyBuffer.array());
-    fullResponseBuffer.put(rpcNfsBuffer.array());
+    Buffer recordMarkBuffer = Buffer.buffer(4).appendInt(recordMarkValue);
+    Flowable<Buffer> fullResponseBuffer = Flowable.concat(Flowable.just(recordMarkBuffer), rpcHeaderBuffer, rpcNfsBuffer);
 
-    return fullResponseBuffer.array();
+    return fullResponseBuffer;
   }
 
   private byte[] createNfsACLSetACLReply(int xid, Buffer request, int startOffset) throws IOException {

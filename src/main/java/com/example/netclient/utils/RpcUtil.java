@@ -1,6 +1,8 @@
 package com.example.netclient.utils;
 
 import com.example.netclient.enums.RpcConstants;
+import io.reactivex.Flowable;
+import io.vertx.core.buffer.Buffer;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -25,6 +27,21 @@ public class RpcUtil {
     buffer.putInt(RpcConstants.VERF_FLAVOR_AUTH_NONE);   // 认证机制: 无 (0)
     buffer.putInt(RpcConstants.VERF_LENGTH_ZERO);        // 认证数据长度: 0
     buffer.putInt(RpcConstants.ACCEPT_STAT_SUCCESS);     // 接受状态: 成功 (0)
+  }
+
+  public static Flowable<Buffer> writeAcceptedSuccessReplyHeader(int xid) {
+    // 确保字节序 (如果调用者尚未设置，可以在这里设置，但通常由外部控制)
+    int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
+    Buffer rpcHeaderBuffer = Buffer.buffer(rpcHeaderLength);
+
+    rpcHeaderBuffer.appendInt(xid);                                  // 事务ID
+    rpcHeaderBuffer.appendInt(RpcConstants.MSG_TYPE_REPLY);          // 消息类型: 回复 (1)
+    rpcHeaderBuffer.appendInt(RpcConstants.REPLY_STAT_MSG_ACCEPTED); // 回复状态: 接受 (0)
+    rpcHeaderBuffer.appendInt(RpcConstants.VERF_FLAVOR_AUTH_NONE);   // 认证机制: 无 (0)
+    rpcHeaderBuffer.appendInt(RpcConstants.VERF_LENGTH_ZERO);        // 认证数据长度: 0
+    rpcHeaderBuffer.appendInt(RpcConstants.ACCEPT_STAT_SUCCESS);     // 接受状态: 成功 (0)
+
+    return Flowable.just(rpcHeaderBuffer);
   }
 
   /**

@@ -1,5 +1,6 @@
 package com.example.netclient.model;
 
+import io.vertx.core.buffer.Buffer;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -24,5 +25,11 @@ public class PostOpFileHandle3 implements SerializablePayload {
   public int getSerializedSize() {
     int t = handleFollows > 0 ? nfsFileHandle.getSerializedSize() : 0;
     return 4 + t;
+  }
+
+  @Override
+  public void serialize(Buffer buffer) {
+    buffer.appendInt(handleFollows);
+    nfsFileHandle.serialize(buffer);
   }
 }

@@ -1,5 +1,6 @@
 package com.example.netclient.model;
 
+import io.vertx.core.buffer.Buffer;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -53,5 +54,21 @@ public class FSINFO3resok implements SerializablePayload {
       8 + // maxFilesize
       8 + // timeDelta
       4;  // extraField
+  }
+
+  @Override
+  public void serialize(Buffer buffer) {
+    buffer.appendInt(post_op_attr);
+    buffer.appendInt(rtmax);
+    buffer.appendInt(rtpref);
+    buffer.appendInt(rtmult);
+    buffer.appendInt(wtmax);
+    buffer.appendInt(wtpref);
+    buffer.appendInt(wtmult);
+    buffer.appendInt(dtpref);
+    buffer.appendLong(maxFilesize);
+    buffer.appendInt(seconds);
+    buffer.appendInt(nseconds);
+    buffer.appendInt(extraField);
   }
 }

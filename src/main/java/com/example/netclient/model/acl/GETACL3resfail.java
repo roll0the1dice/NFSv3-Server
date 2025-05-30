@@ -2,6 +2,7 @@ package com.example.netclient.model.acl;
 
 import com.example.netclient.model.PostOpAttr;
 import com.example.netclient.model.SerializablePayload;
+import io.vertx.core.buffer.Buffer;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -23,5 +24,10 @@ public class GETACL3resfail implements SerializablePayload {
   @Override
   public int getSerializedSize() {
     return objAttributes.getSerializedSize();
+  }
+
+  @Override
+  public void serialize(Buffer buffer) {
+    objAttributes.serialize(buffer);
   }
 }

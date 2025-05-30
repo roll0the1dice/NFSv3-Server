@@ -1,5 +1,6 @@
 package com.example.netclient.model;
 
+import io.vertx.core.buffer.Buffer;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -24,5 +25,11 @@ public class ACCESS3resok implements SerializablePayload {
   public int getSerializedSize() {
 
     return 4 + objAttributes.getSerializedSize();
+  }
+
+  @Override
+  public void serialize(Buffer buffer) {
+    objAttributes.serialize(buffer);
+    buffer.appendInt(accessFlags);
   }
 }

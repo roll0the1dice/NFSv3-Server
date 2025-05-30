@@ -1,5 +1,6 @@
 package com.example.netclient.model;
 
+import io.vertx.core.buffer.Buffer;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -20,5 +21,10 @@ public class READDIRPLUS3resfail implements SerializablePayload {
   @Override
   public int getSerializedSize() {
     return dirAttributes.getSerializedSize();
+  }
+
+  @Override
+  public void serialize(Buffer buffer) {
+    dirAttributes.serialize(buffer);
   }
 }

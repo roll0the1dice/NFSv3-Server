@@ -1,5 +1,6 @@
 package com.example.netclient.model;
 
+import io.vertx.core.buffer.Buffer;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -62,6 +63,28 @@ public class Entryplus3 implements SerializablePayload {
       4 + // handle length
       ((nameHandleLength + 3) & ~3) + // handle data
       4;  // nextentry present flag
+  }
+
+  @Override
+  public void serialize(Buffer buffer) {
+    buffer.appendLong(fileid);
+    buffer.appendInt(fileNameLength);
+    if (fileNameLength > 0 && fileName != null) {
+      buffer.appendBytes(fileName);
+    }
+    int padding = ((fileNameLength + 3) & ~3) - fileNameLength;
+    for (int i = 0; i < padding; i++) buffer.appendByte((byte) 0);
+    buffer.appendLong(cookie);
+    buffer.appendInt(nameAttrPresent);
+    if (nameAttrPresent != 0 && nameAttr != null) {
+      nameAttr.serialize(buffer);
+    }
+    buffer.appendInt(nameHandlePresent);
+    buffer.appendInt(nameHandleLength);
+    buffer.appendBytes(nameHandle);
+    padding = ((nameHandleLength + 3) & ~3) - nameHandleLength;
+    for (int i = 0; i < padding; i++) buffer.appendByte((byte) 0);
+    buffer.appendInt(nextEntryPresent);
   }
 
 }

@@ -1,5 +1,6 @@
 package com.example.netclient.model;
 
+import io.vertx.core.buffer.Buffer;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -33,6 +34,16 @@ public class LOOKUP3resok implements SerializablePayload {
       (objHandlerLength + 4 - 1) / 4 * 4 + // object handle
       objAttributes.getSerializedSize() + // obj
       dirAttributes.getSerializedSize(); // dir
+  }
+
+  @Override
+  public void serialize(Buffer buffer) {
+    buffer.appendInt(objHandlerLength);
+    buffer.appendBytes(objectHandleData);
+    int paddingBytes = (objectHandleData.length + 4 - 1) / 4 * 4 - objectHandleData.length;
+    for (int i = 0; i < paddingBytes; i++) buffer.appendByte((byte) 0);
+    objAttributes.serialize(buffer);
+    dirAttributes.serialize(buffer);
   }
 
 }

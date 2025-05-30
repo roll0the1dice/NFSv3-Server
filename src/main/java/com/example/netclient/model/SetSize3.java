@@ -1,5 +1,6 @@
 package com.example.netclient.model;
 
+import io.vertx.core.buffer.Buffer;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -24,5 +25,13 @@ public class SetSize3 implements SerializablePayload{
   @Override
   public int getSerializedSize() {
     return 4 + (setIt > 0 ? 8 : 0);
+  }
+
+  @Override
+  public void serialize(Buffer buffer) {
+    buffer.appendInt(setIt);
+    if (setIt > 0) {
+      buffer.appendLong(size);
+    }
   }
 }

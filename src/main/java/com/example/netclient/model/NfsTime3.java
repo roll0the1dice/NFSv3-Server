@@ -1,6 +1,7 @@
 package com.example.netclient.model;
 
 import com.example.netclient.enums.Nfs3Constant;
+import io.vertx.core.buffer.Buffer;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -24,5 +25,11 @@ public class NfsTime3 implements SerializablePayload {
   @Override
   public int getSerializedSize() {
     return 8;
+  }
+
+  @Override
+  public void serialize(Buffer buffer) {
+    buffer.appendInt(seconds);
+    buffer.appendInt(nseconds);
   }
 }

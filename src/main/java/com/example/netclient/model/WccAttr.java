@@ -1,5 +1,6 @@
 package com.example.netclient.model;
 
+import io.vertx.core.buffer.Buffer;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -34,5 +35,14 @@ public class WccAttr implements SerializablePayload {
   @Override
   public int getSerializedSize() {
     return 24;
+  }
+
+  @Override
+  public void serialize(Buffer buffer) {
+    buffer.appendLong(size);
+    buffer.appendInt(mtimeSeconds);
+    buffer.appendInt(mtimeNSeconds);
+    buffer.appendInt(ctimeSeconds);
+    buffer.appendInt(ctimeNSeconds);
   }
 }

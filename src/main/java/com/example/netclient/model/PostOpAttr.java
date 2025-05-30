@@ -1,5 +1,6 @@
 package com.example.netclient.model;
 
+import io.vertx.core.buffer.Buffer;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -25,5 +26,13 @@ public class PostOpAttr implements SerializablePayload {
     // obj Present Flag
     int t = attributesFollow != 0 ? attributes.getSerializedSize() : 0;
     return 4 + t;
+  }
+
+  @Override
+  public void serialize(Buffer buffer) {
+    buffer.appendInt(attributesFollow);
+    if (attributesFollow != 0 && attributes != null) {
+      attributes.serialize(buffer);
+    }
   }
 }
