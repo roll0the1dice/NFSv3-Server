@@ -22,6 +22,7 @@ import io.vertx.reactivex.core.net.NetSocket;
 import io.vertx.reactivex.core.parsetools.RecordParser;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.codec.DecoderException;
+import org.reactivestreams.Subscriber;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
@@ -533,19 +534,20 @@ public class TcpServerVerticle extends AbstractVerticle {
         log.info("Sending NFS response - XID: 0x{}, Size: {} bytes",
             Integer.toHexString(xid), xdrReplyBytes.length);
 
-        Buffer replyBuffer = Buffer.buffer(xdrReplyBytes);
+        Flowable<Buffer> replyBuffer = Flowable.just(Buffer.buffer(xdrReplyBytes));
 
-        log.info("Raw response buffer (" + buffer.length() + " bytes):");
-        // 简单的十六进制打印
-        for (int i = 0; i < replyBuffer.length(); i++) {
-          System.out.printf("%02X ", replyBuffer.getByte(i));
-          if ((i + 1) % 16 == 0 || i == replyBuffer.length() - 1) {
-            System.out.println();
-          }
-        }
-        log.info("---- End of Raw response Buffer ----");
-
-        socket.write(replyBuffer);
+//        log.info("Raw response buffer (" + buffer.length() + " bytes):");
+//        // 简单的十六进制打印
+//        for (int i = 0; i < replyBuffer.length(); i++) {
+//          System.out.printf("%02X ", replyBuffer.getByte(i));
+//          if ((i + 1) % 16 == 0 || i == replyBuffer.length() - 1) {
+//            System.out.println();
+//          }
+//        }
+//        log.info("---- End of Raw response Buffer ----");
+        Subscriber<Buffer> socketSubscriber = socket.toSubscriber();
+        //socket.write(replyBuffer);
+        replyBuffer.safeSubscribe(socketSubscriber);
       }
     } catch (Exception e) {
       log.error("Error processing NFS request", e);
