@@ -1,25 +1,31 @@
 package com.example.netclient;
 
 import com.example.netclient.enums.*;
+import com.example.netclient.httpclient.AwsSignerCreater;
+import com.example.netclient.httpclient.UpDownHttpClient;
 import com.example.netclient.model.*;
 import com.example.netclient.model.acl.*;
 import com.example.netclient.utils.ByteArrayKeyWrapper;
 import com.example.netclient.utils.EnumUtil;
 import com.example.netclient.utils.NetTool;
 import com.example.netclient.utils.RpcUtil;
-import io.vertx.core.AbstractVerticle;
+import io.reactivex.Flowable;
 import io.vertx.core.Promise;
-import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
-import io.vertx.core.net.NetServer;
 import io.vertx.core.net.NetServerOptions;
-import io.vertx.core.net.NetSocket;
+import io.vertx.reactivex.core.AbstractVerticle;
+import io.vertx.reactivex.core.Vertx;
+import io.vertx.reactivex.core.file.FileSystem;
+import io.vertx.reactivex.core.http.HttpClient;
+import io.vertx.reactivex.core.net.NetServer;
+import io.vertx.reactivex.core.net.NetSocket;
 import io.vertx.reactivex.core.parsetools.RecordParser;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.codec.DecoderException;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.net.URISyntaxException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -58,20 +64,27 @@ public class TcpServerVerticle extends AbstractVerticle {
   private static final int NFSPROC_ACL_GETACL = 1;
   private static final int NFSPROC_ACL_SETACL = 2;
 
-  private static Map<String, ByteArrayKeyWrapper> fileNameTofileHandle = new ConcurrentHashMap<>();
-  private static Map<String, Long> fileNameTofileId = new ConcurrentHashMap<>();
-  private static Map<ByteArrayKeyWrapper, Long> fileHandleToFileId = new ConcurrentHashMap<>();
-  private static Map<ByteArrayKeyWrapper, String> fileHandleToFileName = new ConcurrentHashMap<>();
-  private static Map<Long, String> fileIdToFileName = new ConcurrentHashMap<>();
-  private static Map<Long, FAttr3> fileIdToFAttr3 = new ConcurrentHashMap<>();
-  private static Map<ByteArrayKeyWrapper, FAttr3> fileHandleToFAttr3 = new ConcurrentHashMap<>();
-  private static Map<ByteArrayKeyWrapper, ByteArrayKeyWrapper> fileHandleToParentFileHandle = new ConcurrentHashMap<>();
-  private static Map<ByteArrayKeyWrapper, List<ByteArrayKeyWrapper>> fileHandleToChildrenFileHandle = new ConcurrentHashMap<>();
+  private static final Map<String, ByteArrayKeyWrapper> fileNameTofileHandle = new ConcurrentHashMap<>();
+  private static final Map<String, Long> fileNameTofileId = new ConcurrentHashMap<>();
+  private static final Map<ByteArrayKeyWrapper, Long> fileHandleToFileId = new ConcurrentHashMap<>();
+  private static final Map<ByteArrayKeyWrapper, String> fileHandleToFileName = new ConcurrentHashMap<>();
+  private static final Map<Long, String> fileIdToFileName = new ConcurrentHashMap<>();
+  private static final Map<Long, FAttr3> fileIdToFAttr3 = new ConcurrentHashMap<>();
+  private static final Map<ByteArrayKeyWrapper, FAttr3> fileHandleToFAttr3 = new ConcurrentHashMap<>();
+  private static final Map<ByteArrayKeyWrapper, ByteArrayKeyWrapper> fileHandleToParentFileHandle = new ConcurrentHashMap<>();
+  private static final Map<ByteArrayKeyWrapper, List<ByteArrayKeyWrapper>> fileHandleToChildrenFileHandle = new ConcurrentHashMap<>();
 
   private static final String STATIC_FILES_ROOT = "public";
+  private static final String S3HOST = "172.20.123.124";
+  private static final String BUCKET = "mybucket";
+
+  private UpDownHttpClient upDownHttpClient;
+  private FileSystem fs;
 
   @Override
   public void start(Promise<Void> startPromise) throws Exception {
+    init();
+
     // 创建 NetServerOptions (可选，用于配置服务器)
     NetServerOptions options = new NetServerOptions()
       .setPort(PORT)
@@ -146,13 +159,13 @@ public class TcpServerVerticle extends AbstractVerticle {
       vertx.close();
     });
 
-    init();
+
 
     // 也可以直接指定端口和主机，而不使用 NetServerOptions
     // server.listen(PORT, HOST, res -> { /* ... */ });
   }
 
-  private void init() throws DecoderException {
+  private void init() throws DecoderException, URISyntaxException {
     // Current time in seconds and nanoseconds
     long currentTimeMillis = System.currentTimeMillis();
     int seconds = (int)(currentTimeMillis / 1000);
@@ -190,6 +203,32 @@ public class TcpServerVerticle extends AbstractVerticle {
         return;
       }
     }
+
+    Vertx vertx = Vertx.vertx();
+    HttpClient client = vertx.createHttpClient();
+    String host = "172.20.123.124";
+    String bucket = "mybucket";
+    String key = "hello";
+    String targetUrl = String.format("http://%s/%s/%s", host, bucket, key);
+    String resourcePath = String.format("/%s/%s", bucket, key);
+    String accessKey = "MAKIC8SGQQS8424CZT07";
+    String secretKey = "tDFRk9bGzS0j5JXPrdS0qSXL40zSn3xbBRZsPfEH";
+    String regionNmae = "us-east-1";
+    String serviceName = "s3";
+
+    fs = vertx.fileSystem();
+
+    upDownHttpClient = UpDownHttpClient.builder()
+      .client(client)
+      .accessKey(accessKey)
+      .secretKey(secretKey)
+      .region(regionNmae)
+      .service(serviceName)
+      .signerType(AwsSignerCreater.SignerType.AWS_V4)
+      .build();
+
+    upDownHttpClient.put(targetUrl, Flowable.just(Buffer.buffer("hello,world!")))
+      .blockingGet();
   }
 
   private void processCompleteMessage(NetSocket socket) {
@@ -250,14 +289,6 @@ public class TcpServerVerticle extends AbstractVerticle {
     log.info("TCP 服务器正在关闭...");
     // 可以在这里添加关闭服务器的逻辑，但通常 Vert.x 会自动处理
     stopPromise.complete();
-  }
-  // 主方法用于部署 Verticle (方便测试)
-  public static void main(String[] args) {
-    Vertx vertx = Vertx.vertx();
-
-    vertx.deployVerticle(new TcpServerVerticle()) // MySimpleVerticle must have a no-arg constructor
-      .onSuccess(deploymentID -> log.info("Deployed class with ID: " + deploymentID))
-      .onFailure(err -> System.err.println("Deployment failed: " + err.getMessage()));
   }
 
   // RPC Constants (values are in decimal for Java int literals)
@@ -755,10 +786,21 @@ public class TcpServerVerticle extends AbstractVerticle {
 //    byte[] payload = "hello,world\n".getBytes(StandardCharsets.UTF_8);
 //    int dataLength = payload.length;
 
-
-    Path staticRootPath = Paths.get(STATIC_FILES_ROOT);
-    byte[] data = Files.readAllBytes(staticRootPath.resolve(Base64.getUrlEncoder().withoutPadding().encodeToString(fhandle)));
+    byte[] data = new byte[0];
+    String targetUrl = String.format("http://%s/%s/%s", S3HOST, BUCKET, filename);
+    try {
+      Buffer buffer1 = upDownHttpClient.get(targetUrl).blockingGet();
+      data = buffer1.getBytes();
+    } catch (URISyntaxException e) {
+      throw new RuntimeException(e);
+    }
     int dataLength = data.length;
+
+
+
+//    Path staticRootPath = Paths.get(STATIC_FILES_ROOT);
+//    byte[] data = Files.readAllBytes(staticRootPath.resolve(Base64.getUrlEncoder().withoutPadding().encodeToString(fhandle)));
+//    int dataLength = data.length;
 
     FAttr3 fAttr3 = fileHandleToFAttr3.getOrDefault(new ByteArrayKeyWrapper(fhandle), null);
     PostOpAttr fileAttributes = PostOpAttr.builder()
@@ -793,7 +835,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     return fullResponseBuffer.array();
   }
 
-  private byte[] createNfsWriteReply(int xid, Buffer request, int startOffset) throws IOException {
+  private byte[] createNfsWriteReply(int xid, Buffer request, int startOffset) throws IOException, URISyntaxException {
     // Parse file handle, offset, and data from request
     int fhandleLength = request.getInt(startOffset);
     byte[] fhandle = request.slice(startOffset + 4, startOffset + 4 + fhandleLength).getBytes();
@@ -810,26 +852,30 @@ public class TcpServerVerticle extends AbstractVerticle {
     final int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
     ByteBuffer rpcBodyBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
 
+//    Path staticRootPath = Paths.get(STATIC_FILES_ROOT);
+//    Files.write(staticRootPath.resolve(Base64.getUrlEncoder().withoutPadding().encodeToString(fhandle)), data);
+
     ByteArrayKeyWrapper byteArrayKeyWrapper = new ByteArrayKeyWrapper(fhandle);
-    fileHandleToFAttr3.computeIfPresent(byteArrayKeyWrapper, (key, value) -> {
-      int used = (dataOfLength + 4096 - 1) / 4096 * 4096;
-      value.setSize(dataOfLength);
-      value.setUsed(used);
-      return value;
-    });
-
-    Path staticRootPath = Paths.get(STATIC_FILES_ROOT);
-    Files.write(staticRootPath.resolve(Base64.getUrlEncoder().withoutPadding().encodeToString(fhandle)), data);
-
     WRITE3res write3res = null;
     FAttr3 attributes = fileHandleToFAttr3.getOrDefault(byteArrayKeyWrapper, null);
 
     if (attributes != null) {
+      String filename = fileHandleToFileName.getOrDefault(byteArrayKeyWrapper,"");
+      String targetUrl = String.format("http://%s/%s/%s", S3HOST, BUCKET, filename);
+      Flowable<Buffer> fileBodyFlowable = Flowable.just(Buffer.buffer(data));
+      Buffer buffer = upDownHttpClient.put(targetUrl, fileBodyFlowable).blockingGet();
+      log.info("S3 Upload Response: {}", buffer.toString());
+
+      fileHandleToFAttr3.computeIfPresent(byteArrayKeyWrapper, (key, value) -> {
+        int used = (dataOfLength + 4096 - 1) / 4096 * 4096;
+        value.setSize(dataOfLength);
+        value.setUsed(used);
+        return value;
+      });
       PreOpAttr before = PreOpAttr.builder().attributesFollow(0).build();
       PostOpAttr after = PostOpAttr.builder().attributesFollow(1).attributes(attributes).build();
 
       WccData fileWcc = WccData.builder().before(before).after(after).build();
-
       WRITE3resok write3resok = WRITE3resok.builder()
         .fileWcc(fileWcc)
         .count(count)
@@ -1525,18 +1571,8 @@ public class TcpServerVerticle extends AbstractVerticle {
 
   private byte[] createNfsMkdirReply(int xid, Buffer request, int startOffset) {
     // Create reply
-    final int rpcMessageBodyLength = 24;
-    ByteBuffer rpcBodyBuffer = ByteBuffer.allocate(rpcMessageBodyLength);
-    rpcBodyBuffer.order(ByteOrder.BIG_ENDIAN);
-
-    // Standard RPC reply header
-    rpcBodyBuffer.putInt(xid);
-    rpcBodyBuffer.putInt(MSG_TYPE_REPLY);
-    rpcBodyBuffer.putInt(REPLY_STAT_MSG_ACCEPTED);
-    rpcBodyBuffer.putInt(VERF_FLAVOR_AUTH_NONE);
-    rpcBodyBuffer.putInt(VERF_LENGTH_ZERO);
-    rpcBodyBuffer.putInt(ACCEPT_STAT_SUCCESS);
-
+    final int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
+    ByteBuffer rpcHeaderBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
     // NFS MKDIR reply
     // Structure:
     // status (4 bytes)
@@ -1569,12 +1605,12 @@ public class TcpServerVerticle extends AbstractVerticle {
     rpcNfsBuffer.putInt(0); // post_op_attr present = false
 
     // Record marking
-    int recordMarkValue = 0x80000000 | (rpcMessageBodyLength + rpcNfsLength);
+    int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
 
-    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcMessageBodyLength + rpcNfsLength);
+    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcHeaderLength + rpcNfsLength);
     fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
     fullResponseBuffer.putInt(recordMarkValue);
-    fullResponseBuffer.put(rpcBodyBuffer.array());
+    fullResponseBuffer.put(rpcHeaderBuffer.array());
     fullResponseBuffer.put(rpcNfsBuffer.array());
 
     return fullResponseBuffer.array();
