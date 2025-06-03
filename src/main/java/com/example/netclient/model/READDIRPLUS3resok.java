@@ -24,8 +24,10 @@ public class READDIRPLUS3resok implements SerializablePayload {
     dirAttributes.serialize(buffer);
     buffer.putLong(cookieverf);
     buffer.putInt(entriesPresentFlag);
-    for (Entryplus3 entry : entries) {
-      entry.serialize(buffer);
+    if (entriesPresentFlag != 0 && entries != null) {
+      for (Entryplus3 entry : entries) {
+        entry.serialize(buffer);
+      }
     }
     buffer.putInt(eof);
   }
@@ -46,8 +48,10 @@ public class READDIRPLUS3resok implements SerializablePayload {
     dirAttributes.serialize(buffer);
     buffer.appendLong(cookieverf);
     buffer.appendInt(entriesPresentFlag);
-    for (Entryplus3 entry : entries) {
-      entry.serialize(buffer);
+    if (entriesPresentFlag != 0 && entries != null) {
+      for (Entryplus3 entry : entries) {
+        entry.serialize(buffer);
+      }
     }
     buffer.appendInt(eof);
   }
