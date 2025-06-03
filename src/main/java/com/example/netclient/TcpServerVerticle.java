@@ -26,7 +26,6 @@ import org.apache.commons.codec.DecoderException;
 import org.reactivestreams.Subscriber;
 
 import java.io.IOException;
-import java.lang.reflect.Field;
 import java.net.URISyntaxException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -35,12 +34,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Flow;
-import java.util.stream.Collectors;
+import java.util.concurrent.atomic.AtomicReference;
 
 
 @Slf4j
@@ -176,7 +173,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     FAttr3 objAttributes = FAttr3.builder()
       .type(2)
       .mode(0755)
-      .nlink(1)
+      .nlink(2)
       .uid(0)
       .gid(0)
       .size(4096)
@@ -460,7 +457,7 @@ public class TcpServerVerticle extends AbstractVerticle {
           flowableXdrReplyBytes = createNfsWriteReply(xid, buffer, startOffset);
           break;
         case NFSPROC_CREATE:
-          xdrReplyBytes = createNfsCreateReply(xid, buffer, startOffset);
+          flowableXdrReplyBytes = createNfsCreateReply(xid, buffer, startOffset);
           break;
         case NFSPROC_MKDIR:
           xdrReplyBytes = createNfsMkdirReply(xid, buffer, startOffset);
@@ -472,7 +469,7 @@ public class TcpServerVerticle extends AbstractVerticle {
           xdrReplyBytes = createNfsMknodReply(xid, buffer, startOffset);
           break;
         case NFSPROC_REMOVE:
-          xdrReplyBytes = createNfsRemoveReply(xid, buffer, startOffset);
+          flowableXdrReplyBytes = createNfsRemoveReply(xid, buffer, startOffset);
           break;
         case NFSPROC_RMDIR:
           xdrReplyBytes = createNfsRmdirReply(xid, buffer, startOffset);
@@ -1358,7 +1355,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     return fullResponseBuffer.array();
   }
 
-  private byte[] createNfsCreateReply(int xid, Buffer request, int startOffset) throws IOException {
+  private Flowable<Buffer> createNfsCreateReply(int xid, Buffer request, int startOffset) throws IOException {
     int dirFhandleLength = request.getInt(startOffset);
     byte[] dirFhandle = request.slice(startOffset + 4, startOffset + 4 + dirFhandleLength).getBytes();
     int nameLength = request.getInt(startOffset + 4 + dirFhandleLength);
@@ -1370,10 +1367,9 @@ public class TcpServerVerticle extends AbstractVerticle {
 
     // Create reply
     final int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
-    ByteBuffer rpcHeaderBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
+    Flowable<Buffer> rpcHeaderBuffer = RpcUtil.writeAcceptedSuccessReplyHeader(xid);
 
     byte[] fileHandle = getFileHandle(name, true);
-
     int fileHandleLength = fileHandle.length;
 
     // NFS CREATE reply
@@ -1407,7 +1403,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     FAttr3 attributes = FAttr3.builder()
       .type(fileType)
       .mode(0)
-      .nlink(1)
+      .nlink(0)
       .uid(0)
       .gid(0)
       .size(0)
@@ -1419,8 +1415,38 @@ public class TcpServerVerticle extends AbstractVerticle {
       .ctimeSeconds(seconds)
       .ctimeNseconds(nseconds)
       .build();
-    PostOpAttr ojbAttributes = PostOpAttr.builder().attributesFollow(1).attributes(attributes).build();
 
+    int nlink = 0;
+    fileHandleToFileId.put(new ByteArrayKeyWrapper(fileHandle), fileId);
+    fileHandleToFileName.put(new ByteArrayKeyWrapper(fileHandle), name);
+    fileIdToFileName.put(fileId, name);
+    fileIdToFAttr3.put(fileId, attributes);
+    fileHandleToFAttr3.put(new ByteArrayKeyWrapper(fileHandle), attributes);
+    if (fileType == 2) {
+      fileHandleToParentFileHandle.put(new ByteArrayKeyWrapper(fileHandle), new ByteArrayKeyWrapper(dirFhandle));
+
+      fileHandleToChildrenFileHandle.compute(new ByteArrayKeyWrapper(fileHandle), (key, value) -> {
+        if (value == null) {
+          value = new ArrayList<>();
+        }
+        boolean add = value.add(new ByteArrayKeyWrapper(fileHandle));
+        value.add(new ByteArrayKeyWrapper(dirFhandle));
+        return value;
+      });
+      nlink++;
+    }
+    fileHandleToChildrenFileHandle.compute(new ByteArrayKeyWrapper(dirFhandle), (key, value) -> {
+      if (value == null) {
+        value = new ArrayList<>();
+      }
+      boolean add = value.add(new ByteArrayKeyWrapper(fileHandle));
+      return value;
+    });
+    nlink++;
+
+
+    attributes.setNlink(nlink);
+    PostOpAttr ojbAttributes = PostOpAttr.builder().attributesFollow(1).attributes(attributes).build();
     PreOpAttr before = PreOpAttr.builder().attributesFollow(0).build();
     PostOpAttr after = PostOpAttr.builder().attributesFollow(0).build();
     WccData dirWcc = WccData.builder().before(before).after(after).build();
@@ -1434,35 +1460,14 @@ public class TcpServerVerticle extends AbstractVerticle {
     CREATE3res create3res = CREATE3res.createSuccess(create3resok);
 
     int rpcNfsLength = create3res.getSerializedSize();
-    ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
-    rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
-
-    create3res.serialize(rpcNfsBuffer);
-
-    fileHandleToFileId.put(new ByteArrayKeyWrapper(fileHandle), fileId);
-    fileHandleToFileName.put(new ByteArrayKeyWrapper(fileHandle), name);
-    fileIdToFileName.put(fileId, name);
-    fileIdToFAttr3.put(fileId, attributes);
-    fileHandleToFAttr3.put(new ByteArrayKeyWrapper(fileHandle), attributes);
-    fileHandleToParentFileHandle.put(new ByteArrayKeyWrapper(fileHandle), new ByteArrayKeyWrapper(dirFhandle));
-    fileHandleToChildrenFileHandle.compute(new ByteArrayKeyWrapper(dirFhandle), (key, value) -> {
-      if (value == null) {
-        value = new ArrayList<>();
-      }
-      boolean add = value.add(new ByteArrayKeyWrapper(fileHandle));
-      return value;
-    });
+    Flowable<Buffer> rpcNfsBuffer = create3res.serializeToFlowable();
 
     // Record marking
     int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
+    Buffer buffer = Buffer.buffer(4).appendInt(recordMarkValue);
+    Flowable<Buffer> fullResponseBuffer = Flowable.concat(Flowable.just(buffer), rpcHeaderBuffer, rpcNfsBuffer);
 
-    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcHeaderLength + rpcNfsLength);
-    fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
-    fullResponseBuffer.putInt(recordMarkValue);
-    fullResponseBuffer.put(rpcHeaderBuffer.array());
-    fullResponseBuffer.put(rpcNfsBuffer.array());
-
-    return fullResponseBuffer.array();
+    return fullResponseBuffer;
   }
 
   private byte[] createNfsMkdirReply(int xid, Buffer request, int startOffset) {
@@ -1627,19 +1632,69 @@ public class TcpServerVerticle extends AbstractVerticle {
     return fullResponseBuffer.array();
   }
 
-  private byte[] createNfsRemoveReply(int xid, Buffer request, int startOffset) {
-    // Create reply
-    final int rpcMessageBodyLength = 24;
-    ByteBuffer rpcBodyBuffer = ByteBuffer.allocate(rpcMessageBodyLength);
-    rpcBodyBuffer.order(ByteOrder.BIG_ENDIAN);
+  private Flowable<Buffer> createNfsRemoveReply(int xid, Buffer request, int startOffset) throws IOException {
+    int dirFhandleLength = request.getInt(startOffset);
+    byte[] dirFhandle = request.slice(startOffset + 4, startOffset + 4 + dirFhandleLength).getBytes();
+    int nameLength = request.getInt(startOffset + 4 + dirFhandleLength);
+    String name = request.slice(startOffset + 4 + dirFhandleLength + 4,
+      startOffset + 4 + dirFhandleLength + 4 + nameLength).toString("UTF-8");
 
-    // Standard RPC reply header
-    rpcBodyBuffer.putInt(xid);
-    rpcBodyBuffer.putInt(MSG_TYPE_REPLY);
-    rpcBodyBuffer.putInt(REPLY_STAT_MSG_ACCEPTED);
-    rpcBodyBuffer.putInt(VERF_FLAVOR_AUTH_NONE);
-    rpcBodyBuffer.putInt(VERF_LENGTH_ZERO);
-    rpcBodyBuffer.putInt(ACCEPT_STAT_SUCCESS);
+    // Create reply
+    final int rpcHeaderLength = 24;
+    Flowable<Buffer> rpcHeaderBuffer = RpcUtil.writeAcceptedSuccessReplyHeader(xid);
+
+    ByteArrayKeyWrapper byteArrayKeyWrapper = new ByteArrayKeyWrapper(dirFhandle);
+    FAttr3 fAttr3 = fileHandleToFAttr3.getOrDefault(byteArrayKeyWrapper, null);
+
+    REMOVE3res remove3res = null;
+    if (fAttr3 != null) {
+      int euid = fAttr3.getUid();
+      if (euid == 0) {
+        List<ByteArrayKeyWrapper> subEntries = fileHandleToChildrenFileHandle.getOrDefault(byteArrayKeyWrapper, null);
+        AtomicReference<ByteArrayKeyWrapper> shouldDeletedSubEntry = new AtomicReference<>();
+        subEntries.forEach(subEntry -> {
+          String filename = fileHandleToFileName.getOrDefault(subEntry, null);
+          if (filename != null && filename.equals(name)) {
+            shouldDeletedSubEntry.set(subEntry);
+          }
+        });
+        if (shouldDeletedSubEntry.get() != null) {
+          subEntries.remove(shouldDeletedSubEntry.get());
+          fileHandleToParentFileHandle.remove(shouldDeletedSubEntry.get());
+          fileHandleToFileId.remove(shouldDeletedSubEntry.get());
+          fileHandleToFAttr3.remove(shouldDeletedSubEntry.get());
+          fileHandleToFileName.remove(shouldDeletedSubEntry.get());
+
+          PreOpAttr preOpAttr = PreOpAttr.builder().attributesFollow(0).build();
+          PostOpAttr postOpAttr = PostOpAttr.builder().attributesFollow(1).attributes(fAttr3).build();
+          WccData wccData = WccData.builder().before(preOpAttr).after(postOpAttr).build();
+          REMOVE3resok remove3resok = REMOVE3resok.builder().dirWcc(wccData).build();
+          remove3res = REMOVE3res.createOk(remove3resok);
+        } else {
+          PreOpAttr preOpAttr = PreOpAttr.builder().attributesFollow(0).build();
+          PostOpAttr postOpAttr = PostOpAttr.builder().attributesFollow(1).attributes(fAttr3).build();
+          WccData wccData = WccData.builder().before(preOpAttr).after(postOpAttr).build();
+          REMOVE3resfail remove3resfail = REMOVE3resfail.builder().dirWcc(wccData).build();
+          remove3res = REMOVE3res.createFail(NfsStat3.NFS3ERR_NOENT, remove3resfail);
+        }
+      } else {
+        PreOpAttr preOpAttr = PreOpAttr.builder().attributesFollow(0).build();
+        PostOpAttr postOpAttr = PostOpAttr.builder().attributesFollow(1).attributes(fAttr3).build();
+        WccData wccData = WccData.builder().before(preOpAttr).after(postOpAttr).build();
+        REMOVE3resfail remove3resfail = REMOVE3resfail.builder().dirWcc(wccData).build();
+        remove3res = REMOVE3res.createFail(NfsStat3.NFS3ERR_PERM, remove3resfail);
+      }
+    } else {
+      PreOpAttr preOpAttr = PreOpAttr.builder().attributesFollow(0).build();
+      PostOpAttr postOpAttr = PostOpAttr.builder().attributesFollow(1).attributes(fAttr3).build();
+      WccData wccData = WccData.builder().before(preOpAttr).after(postOpAttr).build();
+      REMOVE3resfail remove3resfail = REMOVE3resfail.builder().dirWcc(wccData).build();
+      remove3res = REMOVE3res.createFail(NfsStat3.NFS3ERR_BADHANDLE, remove3resfail);
+    }
+
+    if (remove3res == null) {
+      throw new RuntimeException();
+    }
 
     // NFS REMOVE reply
     // Structure:
@@ -1647,30 +1702,15 @@ public class TcpServerVerticle extends AbstractVerticle {
     // wcc_data
     //   pre_op_attr present flag (4 bytes)
     //   post_op_attr present flag (4 bytes)
-    int rpcNfsLength = 4 + // status
-        4 + // pre_op_attr present flag
-        4;  // post_op_attr present flag
-
-    ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
-    rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
-
-    // Status (NFS_OK = 0)
-    rpcNfsBuffer.putInt(0);
-
-    // wcc_data
-    rpcNfsBuffer.putInt(0); // pre_op_attr present = false
-    rpcNfsBuffer.putInt(0); // post_op_attr present = false
+    int rpcNfsLength = remove3res.getSerializedSize();
+    Flowable<Buffer> rpcNfsBuffer = remove3res.serializeToFlowable();
 
     // Record marking
-    int recordMarkValue = 0x80000000 | (rpcMessageBodyLength + rpcNfsLength);
+    int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
+    Buffer buffer = Buffer.buffer(4).appendInt(recordMarkValue);
+    Flowable<Buffer> fullResponseBuffer = Flowable.concat(Flowable.just(buffer), rpcHeaderBuffer, rpcNfsBuffer);
 
-    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcMessageBodyLength + rpcNfsLength);
-    fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
-    fullResponseBuffer.putInt(recordMarkValue);
-    fullResponseBuffer.put(rpcBodyBuffer.array());
-    fullResponseBuffer.put(rpcNfsBuffer.array());
-
-    return fullResponseBuffer.array();
+    return fullResponseBuffer;
   }
 
   private byte[] createNfsRmdirReply(int xid, Buffer request, int startOffset) {
@@ -1884,6 +1924,12 @@ public class TcpServerVerticle extends AbstractVerticle {
     return fullResponseBuffer.array();
   }
 
+//  private boolean checkWriteAndExecutePermission(int euid, int dirid, int mode, int dirMode) {
+//    // 1. Check write and execute permission on parent directory for the current user
+//    boolean can_write_dir = false;
+//    boolean can_execute_dir = false;
+//  }
+
   private Flowable<Buffer> createNfsReadDirPlusReply(int xid, Buffer request, int startOffset) throws IOException {
     // Parse directory file handle from request
     int dirFhandleLength = request.getInt(startOffset);
@@ -1920,8 +1966,8 @@ public class TcpServerVerticle extends AbstractVerticle {
 //      .map(key -> fileHandleToFileName.getOrDefault(key, ""))
 //      .filter(s -> !s.isEmpty())
 //      .collect(Collectors.toList());
-    ByteArrayKeyWrapper byteArrayKeyWrapper = new ByteArrayKeyWrapper(dirFhandle);
-    List<ByteArrayKeyWrapper> allEntries = fileHandleToChildrenFileHandle.getOrDefault(byteArrayKeyWrapper, new ArrayList<>());
+
+   // List<ByteArrayKeyWrapper> allEntries = fileHandleToChildrenFileHandle.getOrDefault(byteArrayKeyWrapper, new ArrayList<>());
 //    allEntries.add(byteArrayKeyWrapper);
 //    ByteArrayKeyWrapper parentDir = fileHandleToParentFileHandle.getOrDefault(byteArrayKeyWrapper, null);
 //    if (parentDir != null) {
@@ -1938,6 +1984,79 @@ public class TcpServerVerticle extends AbstractVerticle {
     int nseconds = (int)((currentTimeMillis % 1000) * 1_000_000);
 
     List<Entryplus3> entries = new ArrayList<>();
+    ByteArrayKeyWrapper byteArrayKeyWrapper = new ByteArrayKeyWrapper(dirFhandle);
+    List<ByteArrayKeyWrapper> allEntries = fileHandleToChildrenFileHandle.getOrDefault(byteArrayKeyWrapper, new ArrayList<>());
+    int totalEntrySize = allEntries.size();
+//    Flowable<Entryplus3> entryplus3Flowable = Flowable.fromIterable(allEntries)
+//      .zipWith(Flowable.range(0, totalEntrySize > 0 ? totalEntrySize : 0),
+//        ((byteArrayKeyWrapper1, index) -> {
+//          return new IndexedItem<ByteArrayKeyWrapper>(index, byteArrayKeyWrapper1);
+//        }))
+//      .map(byteArrayKeyWrapperIndexedItem -> {
+//        ByteArrayKeyWrapper keyWrapper = byteArrayKeyWrapperIndexedItem.getValue();
+//        int index = byteArrayKeyWrapperIndexedItem.getIndex();
+//        String entryName = fileHandleToFileName.getOrDefault(keyWrapper, ".");
+//        int entryNameLength = entryName.length();
+//        long fileId = getFileId(entryName);
+//        byte[] nameBytes = entryName.getBytes(StandardCharsets.UTF_8);
+//        long nextCookie = 0;
+//        if (index == allEntries.size() - 1) {
+//          // 注意：
+//          // cookie 不返回这个会导致无限循环
+//          nextCookie = 0x7fffffffffffffffL;
+//        } else {
+//          nextCookie = index + 1;
+//        }
+//
+//        log.info("Entry '{}' size: {} bytes, current total: {} bytes (dircount limit: {} bytes)",
+//          entryName, entryNameLength, currentSize, dircount);
+//
+//        FAttr3 nameAttr = fileHandleToFAttr3.getOrDefault(keyWrapper, null);
+//        Entryplus3 entryplus3 = Entryplus3.builder()
+//          .fileid(fileId)
+//          .fileNameLength(entryNameLength)
+//          .fileName(nameBytes)
+//          .cookie(nextCookie)
+//          .nameAttrPresent(nameAttr != null ? 1 : 0)
+//          .nameAttr(nameAttr)
+//          .nameHandlePresent(1)
+//          .nameHandleLength(keyWrapper.getData().length)
+//          .nameHandle(keyWrapper.getData())
+//          .nextEntryPresent(index == allEntries.size() - 1 ? 0 : 1)
+//          .build();
+//
+//        return entryplus3;
+//      });
+//
+//    Single<READDIRPLUS3res> readdirplus3resSingle = entryplus3Flowable.collect(
+//      ArrayList::new, // 初始收集器 (supplier)
+//      List::add        // 如何将项添加到收集器 (accumulator)
+//    ).flatMap(listEntryplus3 -> {
+//      if (listEntryplus3.isEmpty()) {
+//        FAttr3 dirAttr3 = fileHandleToFAttr3.getOrDefault(new ByteArrayKeyWrapper(dirFhandle), null);
+//        PostOpAttr dirAttributes = PostOpAttr.builder()
+//          .attributesFollow(dirAttr3 != null ? 1 : 0)
+//          .attributes(dirAttr3)
+//          .build();
+//        READDIRPLUS3resfail readdirplus3resfail = READDIRPLUS3resfail.builder().dirAttributes(dirAttributes).build();
+//
+//        return Single.just(READDIRPLUS3res.createFail(NfsStat3.NFS3ERR_NOENT, readdirplus3resfail));
+//      }
+//
+//      FAttr3 dirAttr = fileHandleToFAttr3.getOrDefault(byteArrayKeyWrapper, null);
+//      PostOpAttr dirAttributes = PostOpAttr.builder().attributesFollow(1).attributes(dirAttr).build();
+//      READDIRPLUS3resok readdirplus3resok = READDIRPLUS3resok.builder()
+//        .dirAttributes(dirAttributes)
+//        .cookieverf(0L)
+//        .entriesPresentFlag(1)
+//        .entries(entries)
+//        .eof(1)
+//        .build();
+//      return Single.just(READDIRPLUS3res.createOk(readdirplus3resok));
+//    });
+//
+//    readdirplus3resSingle.subscribe();
+
 
     for (int i = 0; i < allEntries.size(); i++) {
       ByteArrayKeyWrapper keyWrapper = allEntries.get(i);
