@@ -38,11 +38,9 @@ public class SETATTR3args {
     setIt = buffer.getInt();
     long size = setIt != 0 ? buffer.getLong() : 0;
     SetSize3 setSize3 = new SetSize3(setIt, size);
-    setIt = buffer.getInt();
-    SetAtime setAtime = new SetAtime(setIt, 0, 0);
-    setIt = buffer.getInt();
-    SetMtime setMtime = new SetMtime(setIt, 0, 0);
-    SetAttr3 setAttr3 = new SetAttr3(setMode3, uid3, gid3, setSize3, setAtime, setMtime);
+    int setAtime = buffer.getInt();
+    int setMTime = buffer.getInt();
+    SetAttr3 setAttr3 = new SetAttr3(setMode3, uid3, gid3, setSize3, setAtime, setMTime);
 
     int check = buffer.getInt();
     int seconds = check != 0 ? buffer.getInt() : 0;

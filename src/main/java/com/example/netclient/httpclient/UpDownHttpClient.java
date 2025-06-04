@@ -65,7 +65,73 @@ public class UpDownHttpClient {
     return responseBuffer;
   }
 
+  public Single<Buffer> delete(String targetUrl) throws URISyntaxException {
+    URI uri = new URI(targetUrl);
+    String host = uri.getHost();
+    String resourcePath = uri.getPath();
+    AwsSigner awsSigner = AwsSignerCreater.createSigner(signerType, accessKey, secretKey, region, service);
+
+    Single<HttpClientRequest> request = client.rxRequest(HttpMethod.DELETE, 80, host, resourcePath);
+    Single<Buffer> responseBuffer = request.flatMap(httpClientRequest -> {
+        Map<String, String> pseudoHeaders = new HashMap<>();
+        String authorization = awsSigner.calculateAuthorization(String.valueOf(HttpMethod.DELETE), targetUrl, pseudoHeaders, null);
+
+        for (Map.Entry<String, String> header : pseudoHeaders.entrySet()) {
+          httpClientRequest.putHeader(header.getKey(), header.getValue());
+        }
+        httpClientRequest.putHeader("Authorization", authorization);
+        if (signerType == AwsSignerCreater.SignerType.AWS_V2) {
+          httpClientRequest.putHeader("Date", awsSigner.getAmzDate());
+        } else {
+          httpClientRequest.putHeader("x-amz-date", awsSigner.getAmzDate());
+        }
+
+        return httpClientRequest.rxSend();
+      })
+      .flatMap(HttpClientResponse::rxBody)
+      .subscribeOn(Schedulers.io());
+
+    return responseBuffer;
+  }
+
   public Single<Buffer> put(String targetUrl, Flowable<Buffer> fileBodyFlowable) throws URISyntaxException {
+    URI uri = new URI(targetUrl);
+    String host = uri.getHost();
+    String resourcePath = uri.getPath();
+    AwsSigner awsSigner = AwsSignerCreater.createSigner(signerType, accessKey, secretKey, region, service);
+
+    Single<HttpClientRequest> requestSingle = client.rxRequest(HttpMethod.PUT, 80, host, resourcePath);
+    Single<Buffer> responseBodySingle = requestSingle.flatMap(httpClientRequest -> {
+        Map<String, String> pseudoHeaders = new HashMap<>();
+        pseudoHeaders.put("x-amz-content-sha256", "UNSIGNED-PAYLOAD");
+
+        String authorization = awsSigner.calculateAuthorization(String.valueOf(HttpMethod.PUT), targetUrl, pseudoHeaders, null);
+
+        for (Map.Entry<String, String> entry : pseudoHeaders.entrySet()) {
+          httpClientRequest.putHeader(entry.getKey(), entry.getValue());
+        }
+        httpClientRequest.putHeader("Authorization", authorization);
+        if (signerType == AwsSignerCreater.SignerType.AWS_V2) {
+          httpClientRequest.putHeader("Date", awsSigner.getAmzDate());
+        } else {
+          httpClientRequest.putHeader("x-amz-date", awsSigner.getAmzDate());
+        }
+
+        return httpClientRequest.rxSend(fileBodyFlowable);
+      })
+      .flatMap(httpClientResponse -> {
+        System.out.println("Upload successful! Server response status: " + httpClientResponse.statusCode() + " " + httpClientResponse.statusMessage());
+        if (httpClientResponse.statusCode() >= 200 && httpClientResponse.statusCode() < 300) {
+          return httpClientResponse.rxBody();
+        } else {
+          return httpClientResponse.rxBody();
+        }
+      });
+
+    return responseBodySingle;
+  }
+
+  public Single<Buffer> putChunkFile(String targetUrl, Flowable<Buffer> fileBodyFlowable) throws URISyntaxException {
     URI uri = new URI(targetUrl);
     String host = uri.getHost();
     String resourcePath = uri.getPath();
@@ -141,7 +207,7 @@ public class UpDownHttpClient {
 //        error -> log.error("Upload and close operation FAILED.", error)
 //      );
 
-    Single<Buffer> bufferSingle = upDownHttpClient.get(targetUrl);
+    Single<Buffer> bufferSingle = upDownHttpClient.delete(targetUrl);
     int datalength = bufferSingle
       .flatMap(buffer -> {
         return Single.just(buffer.length());

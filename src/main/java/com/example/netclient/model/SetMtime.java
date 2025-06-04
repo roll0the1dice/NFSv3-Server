@@ -4,13 +4,15 @@ import io.vertx.core.buffer.Buffer;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.nio.ByteBuffer;
 
 @Data
 @AllArgsConstructor
+@NoArgsConstructor
 @Builder
-public class SetMtime implements SerializablePayload {
+public class SetMtime implements SerializablePayload, DeserializablePayload {
   public int setIt;
   public int mtimeSeconds;
   public int mtimeNSeconds;
@@ -36,5 +38,21 @@ public class SetMtime implements SerializablePayload {
       buffer.appendInt(mtimeSeconds);
       buffer.appendInt(mtimeNSeconds);
     }
+  }
+
+  @Override
+  public void deserialize(Buffer buffer, int startingOffset) {
+    int index = startingOffset;
+    setIt = buffer.getInt(index);
+  }
+
+  @Override
+  public void deserialize() {
+
+  }
+
+  @Override
+  public int getDeserializedSize() {
+    return 4;
   }
 }

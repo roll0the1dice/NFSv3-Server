@@ -10,7 +10,9 @@ import com.example.netclient.utils.EnumUtil;
 import com.example.netclient.utils.NetTool;
 import com.example.netclient.utils.RpcUtil;
 import io.reactivex.Flowable;
+import io.reactivex.Scheduler;
 import io.reactivex.Single;
+import io.reactivex.schedulers.Schedulers;
 import io.vertx.core.Promise;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.net.NetServerOptions;
@@ -173,7 +175,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     FAttr3 objAttributes = FAttr3.builder()
       .type(2)
       .mode(0755)
-      .nlink(2)
+      .nlink(1)
       .uid(0)
       .gid(0)
       .size(4096)
@@ -204,7 +206,7 @@ public class TcpServerVerticle extends AbstractVerticle {
       }
     }
 
-    Vertx vertx = Vertx.vertx();
+    //Vertx vertx = Vertx.vertx();
     HttpClient client = vertx.createHttpClient();
     String host = "172.20.123.124";
     String bucket = "mybucket";
@@ -227,8 +229,7 @@ public class TcpServerVerticle extends AbstractVerticle {
       .signerType(AwsSignerCreater.SignerType.AWS_V4)
       .build();
 
-    upDownHttpClient.put(targetUrl, Flowable.just(Buffer.buffer("hello,world!")))
-      .blockingGet();
+    upDownHttpClient.put(targetUrl, Flowable.just(Buffer.buffer("hello,world!"))).subscribeOn(Schedulers.single()).observeOn(Schedulers.single()).subscribe();
   }
 
   private void processCompleteMessage(NetSocket socket) {
@@ -460,7 +461,7 @@ public class TcpServerVerticle extends AbstractVerticle {
           flowableXdrReplyBytes = createNfsCreateReply(xid, buffer, startOffset);
           break;
         case NFSPROC_MKDIR:
-          xdrReplyBytes = createNfsMkdirReply(xid, buffer, startOffset);
+          flowableXdrReplyBytes = createNfsMkdirReply(xid, buffer, startOffset);
           break;
         case NFSPROC_SYMLINK:
           xdrReplyBytes = createNfsSymlinkReply(xid, buffer, startOffset);
@@ -744,7 +745,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     byte[] data = new byte[0];
     String targetUrl = String.format("http://%s/%s/%s", S3HOST, BUCKET, filename);
 
-    Single<Buffer> bufferSingle =  upDownHttpClient.get(targetUrl);
+    Single<Buffer> bufferSingle =  upDownHttpClient.get(targetUrl).subscribeOn(Schedulers.io()).observeOn(Schedulers.io());
     int dataLength = bufferSingle.map(Buffer::length).blockingGet();
     data = bufferSingle.blockingGet().getBytes();
 
@@ -792,57 +793,69 @@ public class TcpServerVerticle extends AbstractVerticle {
     final int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
     Flowable<Buffer> rpcHeaderBuffer = RpcUtil.writeAcceptedSuccessReplyHeader(xid);
 
-//    Path staticRootPath = Paths.get(STATIC_FILES_ROOT);
-//    Files.write(staticRootPath.resolve(Base64.getUrlEncoder().withoutPadding().encodeToString(fhandle)), data);
+    Single<WRITE3res> write3res = handleNfsWriteAsync(fhandle, data, dataOfLength, count);
 
+    return write3res.flatMapPublisher(write3res1 -> {
+      int rpcNfsLength = write3res1.getSerializedSize();
+
+      Flowable<Buffer> rpcNfsBuffer = write3res1.serializeToFlowable();
+
+      int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
+      Buffer buffer = Buffer.buffer(4).appendInt(recordMarkValue);
+      Flowable<Buffer> fullResponseBuffer = Flowable.concat(Flowable.just(buffer), rpcHeaderBuffer, rpcNfsBuffer);
+
+      return fullResponseBuffer;
+    });
+  }
+
+  private Single<WRITE3res> handleNfsWriteAsync(byte[] fhandle, byte[] data, int dataOfLength, int count) throws URISyntaxException {
     ByteArrayKeyWrapper byteArrayKeyWrapper = new ByteArrayKeyWrapper(fhandle);
-    WRITE3res write3res = null;
     FAttr3 attributes = fileHandleToFAttr3.getOrDefault(byteArrayKeyWrapper, null);
 
     if (attributes != null) {
       String filename = fileHandleToFileName.getOrDefault(byteArrayKeyWrapper,"");
       String targetUrl = String.format("http://%s/%s/%s", S3HOST, BUCKET, filename);
       Flowable<Buffer> fileBodyFlowable = Flowable.just(Buffer.buffer(data));
-      Buffer buffer = upDownHttpClient.put(targetUrl, fileBodyFlowable).blockingGet();
-      log.info("S3 Upload Response: {}", buffer.toString());
+      Single<WRITE3res> response = upDownHttpClient.put(targetUrl, fileBodyFlowable).subscribeOn(Schedulers.io()).observeOn(Schedulers.io())
+          .flatMap(buffer1 -> {
+            log.info("S3 Upload Response: {}", buffer1.toString());
+            fileHandleToFAttr3.computeIfPresent(byteArrayKeyWrapper, (key, value) -> {
+              int used = (dataOfLength + 4096 - 1) / 4096 * 4096;
+              value.setSize(dataOfLength);
+              value.setUsed(used);
+              return value;
+            });
+            PreOpAttr before = PreOpAttr.builder().attributesFollow(0).build();
+            PostOpAttr after = PostOpAttr.builder().attributesFollow(1).attributes(attributes).build();
 
-      fileHandleToFAttr3.computeIfPresent(byteArrayKeyWrapper, (key, value) -> {
-        int used = (dataOfLength + 4096 - 1) / 4096 * 4096;
-        value.setSize(dataOfLength);
-        value.setUsed(used);
-        return value;
-      });
-      PreOpAttr before = PreOpAttr.builder().attributesFollow(0).build();
-      PostOpAttr after = PostOpAttr.builder().attributesFollow(1).attributes(attributes).build();
+            WccData fileWcc = WccData.builder().before(before).after(after).build();
+            WRITE3resok write3resok = WRITE3resok.builder()
+              .fileWcc(fileWcc)
+              .count(count)
+              .committed(WRITE3resok.StableHow.DATA_SYNC)
+              .verifier(0L)
+              .build();
 
-      WccData fileWcc = WccData.builder().before(before).after(after).build();
-      WRITE3resok write3resok = WRITE3resok.builder()
-        .fileWcc(fileWcc)
-        .count(count)
-        .committed(WRITE3resok.StableHow.DATA_SYNC)
-        .verifier(0L)
-        .build();
+            return Single.just(WRITE3res.createOk(write3resok));
+          })
+        .onErrorResumeNext(error -> {
+          PreOpAttr before = PreOpAttr.builder().attributesFollow(0).build();
+          PostOpAttr after = PostOpAttr.builder().attributesFollow(0).build();
+          WccData fileWcc = WccData.builder().before(before).after(after).build();
+          WRITE3resfail failData = WRITE3resfail.builder().fileWcc(fileWcc).build();
 
-      write3res = WRITE3res.createOk(write3resok);
-    } else {
-      PreOpAttr before = PreOpAttr.builder().attributesFollow(0).build();
-      PostOpAttr after = PostOpAttr.builder().attributesFollow(0).build();
-      WccData fileWcc = WccData.builder().before(before).after(after).build();
-      WRITE3resfail failData = WRITE3resfail.builder().fileWcc(fileWcc).build();
+          return Single.just(WRITE3res.createFail(NfsStat3.NFS3ERR_SERVERFAULT, failData));
+        });
 
-      write3res = WRITE3res.createFail(NfsStat3.NFS3ERR_BADHANDLE, failData);
+      return response;
     }
 
-    // NFS WRITE reply
-    int rpcNfsLength = write3res.getSerializedSize();
-    Flowable<Buffer> rpcNfsBuffer = write3res.serializeToFlowable();
+    PreOpAttr before = PreOpAttr.builder().attributesFollow(0).build();
+    PostOpAttr after = PostOpAttr.builder().attributesFollow(0).build();
+    WccData fileWcc = WccData.builder().before(before).after(after).build();
+    WRITE3resfail failData = WRITE3resfail.builder().fileWcc(fileWcc).build();
 
-    // Record marking
-    int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
-    Buffer buffer = Buffer.buffer(4).appendInt(recordMarkValue);
-    Flowable<Buffer> fullResponseBuffer = Flowable.concat(Flowable.just(buffer), rpcHeaderBuffer, rpcNfsBuffer);
-
-    return fullResponseBuffer;
+    return Single.just(WRITE3res.createFail(NfsStat3.NFS3ERR_BADHANDLE, failData));
   }
 
   private Flowable<Buffer> createNfsFSInfoReply(int xid) throws IOException {
@@ -1072,8 +1085,8 @@ public class TcpServerVerticle extends AbstractVerticle {
         long size = newAttributes.getSize().getSize();
         value.setSize(size);
       }
-      int atimeSetToServerTime = newAttributes.getAtime().getSetIt();
-      int mtimeSetToServerTIme = newAttributes.getMtime().getSetIt();
+      int atimeSetToServerTime = newAttributes.getAtime();
+      int mtimeSetToServerTIme = newAttributes.getMtime();
       long currentTimeMillis = System.currentTimeMillis();
       int seconds = (int)(currentTimeMillis / 1000);
       int nseconds = (int)((currentTimeMillis % 1000) * 1_000_000);
@@ -1470,10 +1483,15 @@ public class TcpServerVerticle extends AbstractVerticle {
     return fullResponseBuffer;
   }
 
-  private byte[] createNfsMkdirReply(int xid, Buffer request, int startOffset) {
+  private Flowable<Buffer> createNfsMkdirReply(int xid, Buffer request, int startOffset) throws IOException {
+
+    MKDIR3args mkdir3args = new MKDIR3args();
+    mkdir3args.deserialize(request, startOffset);
+
     // Create reply
     final int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
-    ByteBuffer rpcHeaderBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
+    Flowable<Buffer> rpcHeaderBuffer = RpcUtil.writeAcceptedSuccessReplyHeader(xid);
+
     // NFS MKDIR reply
     // Structure:
     // status (4 bytes)
@@ -1482,39 +1500,108 @@ public class TcpServerVerticle extends AbstractVerticle {
     // wcc_data
     //   pre_op_attr present flag (4 bytes)
     //   post_op_attr present flag (4 bytes)
-    int rpcNfsLength = 4 + // status
-        32 + // file handle
-        4 + // post_op_attr present flag
-        4 + // pre_op_attr present flag
-        4;  // post_op_attr present flag
+    long currentTimeMillis = System.currentTimeMillis();
+    int seconds = (int) (currentTimeMillis / 1000);
+    int nseconds = (int) ((currentTimeMillis % 1000) * 1_000_000);
 
-    ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
-    rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
+    String dirName = new String(mkdir3args.where.filename, StandardCharsets.UTF_8);
+    byte[] dirHandle = getFileHandle(dirName, true);
+    long fileId = getFileId(dirName);
+    int parentDirLength = mkdir3args.where.dir.handleOfLength;
+    byte[] parentDirHandle = mkdir3args.where.dir.fileHandle;
 
-    // Status (NFS_OK = 0)
-    rpcNfsBuffer.putInt(0);
+    NfsFileHandle3 nfsFileHandle3 = NfsFileHandle3.builder().handleOfLength(dirHandle.length).fileHandle(dirHandle).build();
+    PostOpFileHandle3 obj = PostOpFileHandle3.builder().handleFollows(1).nfsFileHandle(nfsFileHandle3).build();
+    FAttr3 dirAttr = generateDirFAttr3(fileId, seconds, nseconds, mkdir3args);
 
-    // file handle (using the same format as MNT reply)
-    byte[] fileHandle = "00000000000000010000000000000001000000010000000100000004".getBytes();
-    rpcNfsBuffer.put(fileHandle);
+    fileHandleToChildrenFileHandle.compute(new ByteArrayKeyWrapper(dirHandle), (key, value) -> {
+      if (value == null) {
+        value = new ArrayList<>();
+      }
+      value.add(new ByteArrayKeyWrapper(dirHandle));
+      value.add(new ByteArrayKeyWrapper(parentDirHandle));
+      return value;
+    });
+    dirAttr.setNlink(2);
 
-    // post_op_attr
-    rpcNfsBuffer.putInt(0); // present = false
+    PostOpAttr objAttr = PostOpAttr.builder().attributesFollow(1).attributes(dirAttr).build();
+    WccAttr wccAttr = WccAttr.builder().size(dirAttr.getSize()).ctimeSeconds(dirAttr.getCtimeSeconds()).ctimeNSeconds(dirAttr.getCtimeNseconds())
+      .mtimeSeconds(dirAttr.getMtimeSeconds()).mtimeNSeconds(dirAttr.getMtimeNseconds()).build();
+    PreOpAttr preOpAttr = PreOpAttr.builder().attributesFollow(1).attributes(wccAttr).build();
 
-    // wcc_data
-    rpcNfsBuffer.putInt(0); // pre_op_attr present = false
-    rpcNfsBuffer.putInt(0); // post_op_attr present = false
+    fileHandleToChildrenFileHandle.compute(new ByteArrayKeyWrapper(parentDirHandle), (key, value) -> {
+      if (value == null) {
+        value = new ArrayList<>();
+      }
+      value.add(new ByteArrayKeyWrapper(dirHandle));
+      return value;
+    });
+    fileHandleToFileName.put(new ByteArrayKeyWrapper(dirHandle), dirName);
+    fileHandleToFAttr3.put(new ByteArrayKeyWrapper(dirHandle), dirAttr);
+    fileHandleToFileId.put(new ByteArrayKeyWrapper(dirHandle), fileId);
+
+    AtomicReference<FAttr3> fAttr3AtomicReference = new AtomicReference<>();
+    FAttr3 fAttr3 = fileHandleToFAttr3.get(new ByteArrayKeyWrapper(parentDirHandle));
+    fAttr3AtomicReference.set(fAttr3);
+    fAttr3AtomicReference.get().setNlink(fAttr3AtomicReference.get().getNlink() + 1);
+    PostOpAttr postOpAttr = PostOpAttr.builder().attributesFollow(1).attributes(fAttr3AtomicReference.get()).build();
+    WccData wccData = WccData.builder().before(preOpAttr).after(postOpAttr).build();
+    MKDIR3resok mkdir3resok = MKDIR3resok.builder().obj(obj).objAttributes(objAttr).dirWcc(wccData).build();
+    MKDIR3res mkdir3res = MKDIR3res.createOk(mkdir3resok);
+    int rpcNfsLength = mkdir3res.getSerializedSize();
+    Flowable<Buffer> rpcNfsBuffer = mkdir3res.serializeToFlowable();
 
     // Record marking
     int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
+    Buffer buffer = Buffer.buffer(4).appendInt(recordMarkValue);
+    Flowable<Buffer> fullResponseBuffer = Flowable.concat(Flowable.just(buffer), rpcHeaderBuffer, rpcNfsBuffer);
 
-    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcHeaderLength + rpcNfsLength);
-    fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
-    fullResponseBuffer.putInt(recordMarkValue);
-    fullResponseBuffer.put(rpcHeaderBuffer.array());
-    fullResponseBuffer.put(rpcNfsBuffer.array());
+    return fullResponseBuffer;
+  }
 
-    return fullResponseBuffer.array();
+  private static FAttr3 generateDirFAttr3(long fileId, int seconds, int nseconds, MKDIR3args mkdir3args) {
+    if (mkdir3args == null) {
+      throw new IllegalArgumentException("mkdir3args must not be null");
+    }
+
+    FAttr3 dirAttr = FAttr3.builder().type(2).mode(0755).nlink(0).uid(0).gid(0).size(4096).used(4096).rdev(0L)
+      .fsidMajor(0x08c60040).fsidMinor(0x2b5cd8a8).fileid(fileId).ctimeSeconds(seconds).ctimeNseconds(nseconds)
+      .atimeSeconds(seconds).atimeNseconds(nseconds).mtimeSeconds(seconds).mtimeNseconds(nseconds).build();
+
+    SetAttr3 attr3 = mkdir3args.attributes;
+    int modeSetIt = attr3.getMode().getSetIt();
+    if (modeSetIt != 0) {
+      int mode = attr3.getMode().getMode();
+      dirAttr.setMode(mode);
+    }
+    int uidSetIt = attr3.getUid().getSetIt();
+    if (uidSetIt != 0) {
+      int uid = attr3.getUid().getUid();
+      dirAttr.setUid(uid);
+    }
+    int gidSetIt = attr3.getGid().getSetIt();
+    if (gidSetIt != 0) {
+      int gid = attr3.getGid().getGid();
+      dirAttr.setGid(gid);
+    }
+    int sizeSetIt = attr3.getSize().getSetIt();
+    if (sizeSetIt != 0) {
+      long size = attr3.getSize().getSize();
+      dirAttr.setSize(size);
+    }
+    int atimeSetToServerTime = attr3.getAtime();
+    int mtimeSetToServerTIme = attr3.getMtime();
+
+    if (atimeSetToServerTime != 0) {
+      dirAttr.setAtimeSeconds(seconds);
+      dirAttr.setAtimeNseconds(nseconds);
+    }
+    if (mtimeSetToServerTIme != 0) {
+      dirAttr.setMtimeSeconds(seconds);
+      dirAttr.setMtimeNseconds(nseconds);
+    }
+
+    return dirAttr;
   }
 
   private byte[] createNfsSymlinkReply(int xid, Buffer request, int startOffset) {
@@ -1632,7 +1719,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     return fullResponseBuffer.array();
   }
 
-  private Flowable<Buffer> createNfsRemoveReply(int xid, Buffer request, int startOffset) throws IOException {
+  private Flowable<Buffer> createNfsRemoveReply(int xid, Buffer request, int startOffset) throws IOException, URISyntaxException {
     int dirFhandleLength = request.getInt(startOffset);
     byte[] dirFhandle = request.slice(startOffset + 4, startOffset + 4 + dirFhandleLength).getBytes();
     int nameLength = request.getInt(startOffset + 4 + dirFhandleLength);
@@ -1659,6 +1746,11 @@ public class TcpServerVerticle extends AbstractVerticle {
           }
         });
         if (shouldDeletedSubEntry.get() != null) {
+          String filename = fileHandleToFileName.getOrDefault(shouldDeletedSubEntry.get(),"");
+          String targetUrl = String.format("http://%s/%s/%s", S3HOST, BUCKET, filename);
+          Single<Buffer> bufferSingle = upDownHttpClient.delete(targetUrl).subscribeOn(Schedulers.single()).observeOn(Schedulers.single());
+          bufferSingle.subscribe();
+
           subEntries.remove(shouldDeletedSubEntry.get());
           fileHandleToParentFileHandle.remove(shouldDeletedSubEntry.get());
           fileHandleToFileId.remove(shouldDeletedSubEntry.get());
@@ -2056,11 +2148,19 @@ public class TcpServerVerticle extends AbstractVerticle {
 //    });
 //
 //    readdirplus3resSingle.subscribe();
-
+    ByteArrayKeyWrapper parentDirKey = new ByteArrayKeyWrapper(dirFhandle);
 
     for (int i = 0; i < allEntries.size(); i++) {
       ByteArrayKeyWrapper keyWrapper = allEntries.get(i);
-      String entryName = fileHandleToFileName.getOrDefault(keyWrapper, ".");
+      String entryName = "";
+      if (keyWrapper.equals(parentDirKey)) {
+        entryName = "..";
+      } else if (keyWrapper.equals(byteArrayKeyWrapper)) {
+        entryName = ".";
+      } else {
+        entryName = fileHandleToFileName.getOrDefault(keyWrapper, ".");
+      }
+
       int entryNameLength = entryName.length();
       long fileId = getFileId(entryName);
       byte[] nameBytes = entryName.getBytes(StandardCharsets.UTF_8);
