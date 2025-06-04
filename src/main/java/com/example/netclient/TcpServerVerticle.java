@@ -9,6 +9,7 @@ import com.example.netclient.utils.ByteArrayKeyWrapper;
 import com.example.netclient.utils.EnumUtil;
 import com.example.netclient.utils.NetTool;
 import com.example.netclient.utils.RpcUtil;
+import io.reactivex.BackpressureStrategy;
 import io.reactivex.Flowable;
 import io.reactivex.Scheduler;
 import io.reactivex.Single;
@@ -39,6 +40,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Flow;
 import java.util.concurrent.atomic.AtomicReference;
 
 
@@ -98,59 +100,14 @@ public class TcpServerVerticle extends AbstractVerticle {
 
     // 设置连接处理器
     server.connectHandler(socket -> {
-      log.info("客户端连接成功: " + socket.remoteAddress());
+      Flowable<Buffer> response = convertToFlowableRequest(socket)
+        .flatMap(rpcFragment -> {
+          Buffer buffer = rpcFragment.getData();
+          return processCompleteMessage(buffer);
+        });
 
-      // RecordParser 会替我们处理 TCP 分片问题
-      final RecordParser parser = RecordParser.newFixed(4); // Start by reading 4-byte marker
-
-      parser.handler(buffer -> {
-
-        if (currentState == RpcParseState.READING_MARKER) {
-          // 我们得到了4字节的记录标记
-          long recordMarkerRaw = buffer.getUnsignedInt(0); // 读取为无符号整数
-          isLastFragment = (recordMarkerRaw & 0x80000000L) != 0;
-          expectedFragmentLength = (int) (recordMarkerRaw & 0x7FFFFFFF); // 低31位是长度
-
-          System.out.println("Parsed Marker: last=" + isLastFragment + ", length=" + expectedFragmentLength);
-
-          if (expectedFragmentLength == 0) { // 可能是心跳或空片段
-            // 重置为读取下一个标记 (RecordParser 自动回到 fixed(4))
-            parser.fixedSizeMode(4);
-            currentState = RpcParseState.READING_MARKER;
-          } else {
-            parser.fixedSizeMode(expectedFragmentLength); // 切换到读取片段数据模式
-            currentState = RpcParseState.READING_FRAGMENT_DATA;
-          }
-
-        } else if (currentState == RpcParseState.READING_FRAGMENT_DATA) {
-          // 我们得到了片段数据
-          System.out.println("Received fragment data of length: " + buffer.length());
-          messageFragments.add(buffer);
-
-          if (isLastFragment) {
-            processCompleteMessage(socket);
-          }
-          // 无论是不是最后一个片段，下一个都应该是记录标记
-          parser.fixedSizeMode(4); // 重置为读取下一个标记
-          currentState = RpcParseState.READING_MARKER;
-        }
-      });
-
-      parser.exceptionHandler(Throwable::printStackTrace); // 处理解析器可能抛出的异常
-
-      // 为每个连接的 socket 设置数据处理器
-      socket.handler(parser);
-
-      // 设置关闭处理器
-      socket.closeHandler(v -> {
-        log.info("客户端断开连接: " + socket.remoteAddress());
-      });
-
-      // 设置异常处理器
-      socket.exceptionHandler(throwable -> {
-        System.err.println("客户端 [" + socket.remoteAddress() + "] 发生错误: " + throwable.getMessage());
-        socket.close(); // 发生错误时关闭连接
-      });
+      Subscriber<Buffer> socketSubscriber = socket.toSubscriber();
+      response.safeSubscribe(socketSubscriber);
     });
 
     // 启动服务器并监听端口
@@ -165,6 +122,71 @@ public class TcpServerVerticle extends AbstractVerticle {
 
     // 也可以直接指定端口和主机，而不使用 NetServerOptions
     // server.listen(PORT, HOST, res -> { /* ... */ });
+  }
+
+  private Flowable<RpcFragment> convertToFlowableRequest(NetSocket socket) {
+    return Flowable.create(flowableEmitter -> {
+      AtomicReference<RpcParseState> currentStateRef = new AtomicReference<>(RpcParseState.READING_MARKER);
+      final boolean[] isLastFragmentHolder = {false};
+      final int[] expectedFragmentLengthHolder = {0};
+
+      log.info("客户端连接成功: " + socket.remoteAddress());
+      // RecordParser 会替我们处理 TCP 分片问题
+      final RecordParser parser = RecordParser.newFixed(4); // Start by reading 4-byte marker
+
+      parser.handler(buffer -> {
+        if (currentStateRef.get() == RpcParseState.READING_MARKER) {
+          // 我们得到了4字节的记录标记
+          long recordMarkerRaw = buffer.getUnsignedInt(0); // 读取为无符号整数
+          isLastFragmentHolder[0] = (recordMarkerRaw & 0x80000000L) != 0;
+          expectedFragmentLengthHolder[0] = (int) (recordMarkerRaw & 0x7FFFFFFF); // 低31位是长度
+
+          System.out.println("Parsed Marker: last=" + isLastFragmentHolder[0] + ", length=" + expectedFragmentLengthHolder[0]);
+
+          if (expectedFragmentLengthHolder[0] == 0) { // 可能是心跳或空片段
+            // 重置为读取下一个标记 (RecordParser 自动回到 fixed(4))
+            parser.fixedSizeMode(4);
+            currentStateRef.set(RpcParseState.READING_MARKER);
+          } else {
+            parser.fixedSizeMode(expectedFragmentLengthHolder[0]); // 切换到读取片段数据模式
+            currentStateRef.set(RpcParseState.READING_FRAGMENT_DATA);
+          }
+
+        } else if (currentStateRef.get() == RpcParseState.READING_FRAGMENT_DATA) {
+          // 我们得到了片段数据
+          System.out.println("Received fragment data of length: " + buffer.length());
+          flowableEmitter.onNext(new RpcFragment(buffer, isLastFragmentHolder[0]));
+
+          // 无论是不是最后一个片段，下一个都应该是记录标记
+          parser.fixedSizeMode(4); // 重置为读取下一个标记
+          currentStateRef.set(RpcParseState.READING_MARKER);
+        }
+      });
+
+      parser.exceptionHandler(Throwable::printStackTrace); // 处理解析器可能抛出的异常
+
+      // 为每个连接的 socket 设置数据处理器
+      socket.handler(parser);
+
+      // 设置关闭处理器
+      socket.closeHandler(v -> {
+        log.info("客户端断开连接: " + socket.remoteAddress());
+        if (!flowableEmitter.isCancelled()) {
+          flowableEmitter.onComplete();
+        }
+      });
+
+      // 设置异常处理器
+      socket.exceptionHandler(throwable -> {
+        System.err.println("客户端 [" + socket.remoteAddress() + "] 发生错误: " + throwable.getMessage());
+        socket.close(); // 发生错误时关闭连接
+        if (!flowableEmitter.isCancelled()) {
+          flowableEmitter.onError(throwable);
+        }
+      });
+
+    }, BackpressureStrategy.BUFFER);
+
   }
 
   private void init() throws DecoderException, URISyntaxException {
@@ -232,56 +254,30 @@ public class TcpServerVerticle extends AbstractVerticle {
     upDownHttpClient.put(targetUrl, Flowable.just(Buffer.buffer("hello,world!"))).subscribeOn(Schedulers.single()).observeOn(Schedulers.single()).subscribe();
   }
 
-  private void processCompleteMessage(NetSocket socket) {
-    System.out.println("Processing complete message with " + messageFragments.size() + " fragments.");
-    if (messageFragments.isEmpty()) {
-      System.out.println("Received an empty RPC message.");
-      // 处理空消息，如果协议允许
-    } else {
-      // 将所有片段合并成一个大的 Buffer
-      Buffer fullMessage = Buffer.buffer();
-      for (Buffer fragment : messageFragments) {
-        fullMessage.appendBuffer(fragment);
-      }
-      System.out.println("Full message length: " + fullMessage.length());
-      // 在这里反序列化和处理 fullMessage
-      // e.g., MyRpcResponse response = XDR.decode(fullMessage, MyRpcResponse.class);
-      String receivedData = fullMessage.toString("UTF-8");
-      log.info("从客户端 [" + socket.remoteAddress() + "] 收到数据大小: " + receivedData.length());
-
-      log.info("Raw request buffer (" + fullMessage.length() + " bytes):");
-      // 简单的十六进制打印
-      for (int i = 0; i < fullMessage.length(); i++) {
-        System.out.printf("%02X ", fullMessage.getByte(i));
-        if ((i + 1) % 16 == 0 || i == fullMessage.length() - 1) {
-          System.out.println();
-        }
-      }
-      log.info("---- End of Raw request Buffer ----");
+  private Flowable<Buffer> processCompleteMessage(Buffer buffer) {
 
       // Parse RPC header
       //int recordMakerRaw = fullMessage.getInt(0);
-      int xid = fullMessage.getInt(0);
-      int msgType = fullMessage.getInt(4); // Should be CALL (0)
-      int rpcVersion = fullMessage.getInt(8); // Should be 2
-      int programNumber = fullMessage.getInt(12);
-      int programVersion = fullMessage.getInt(16);
-      int procedureNumber = fullMessage.getInt(20);
+      int xid = buffer.getInt(0);
+      int msgType = buffer.getInt(4); // Should be CALL (0)
+      int rpcVersion = buffer.getInt(8); // Should be 2
+      int programNumber = buffer.getInt(12);
+      int programVersion = buffer.getInt(16);
+      int procedureNumber = buffer.getInt(20);
 
       // Handle NFS requests
       if (programNumber == NFS_PROGRAM && programVersion == NFS_VERSION) {
-        handleNFSRequest(fullMessage, socket);
+        return handleNFSRequest(buffer);
       }
       // Handle NFS_ACL requests
       else if (programNumber == NFS_ACL_PROGRAM && programVersion == NFS_ACL_VERSION) {
-        handleNFSACLRequest(fullMessage, socket);
+        return handleNFSACLRequest(buffer);
       }
       else {
         log.error("Unsupported program: program={}, version={}", programNumber, programVersion);
       }
 
-    }
-    messageFragments.clear(); // 清空以便处理下一个消息
+      return Flowable.just(Buffer.buffer());
     // isLastFragment 和 expectedFragmentLength 会在下一次读取标记时重置
   }
 
@@ -397,7 +393,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     }
   }
 
-  private void handleNFSRequest(Buffer buffer, NetSocket socket) {
+  private Flowable<Buffer> handleNFSRequest(Buffer buffer) {
     try {
       // Parse RPC header
       //int recordMakerRaw = buffer.getInt(0);
@@ -415,7 +411,7 @@ public class TcpServerVerticle extends AbstractVerticle {
       if (programNumber != NFS_PROGRAM || programVersion != NFS_VERSION) {
         log.error("Invalid NFS program number or version: program={}, version={}",
             programNumber, programVersion);
-        return;
+        return Flowable.just(Buffer.buffer()) ;
       }
 
       // Parse credentials and verifier
@@ -448,9 +444,9 @@ public class TcpServerVerticle extends AbstractVerticle {
         case NFSPROC_ACCESS:
           flowableXdrReplyBytes = createNfsAccessReply(xid, buffer, startOffset);
           break;
-        case NFSPROC_READLINK:
-          xdrReplyBytes = createNfsReadLinkReply(xid, buffer, startOffset);
-          break;
+//        case NFSPROC_READLINK:
+//          xdrReplyBytes = createNfsReadLinkReply(xid, buffer, startOffset);
+//          break;
         case NFSPROC_READ:
           flowableXdrReplyBytes = createNfsReadReply(xid, buffer, startOffset);
           break;
@@ -463,33 +459,33 @@ public class TcpServerVerticle extends AbstractVerticle {
         case NFSPROC_MKDIR:
           flowableXdrReplyBytes = createNfsMkdirReply(xid, buffer, startOffset);
           break;
-        case NFSPROC_SYMLINK:
-          xdrReplyBytes = createNfsSymlinkReply(xid, buffer, startOffset);
-          break;
-        case NFSPROC_MKNOD:
-          xdrReplyBytes = createNfsMknodReply(xid, buffer, startOffset);
-          break;
+//        case NFSPROC_SYMLINK:
+//          xdrReplyBytes = createNfsSymlinkReply(xid, buffer, startOffset);
+//          break;
+//        case NFSPROC_MKNOD:
+//          xdrReplyBytes = createNfsMknodReply(xid, buffer, startOffset);
+//          break;
         case NFSPROC_REMOVE:
           flowableXdrReplyBytes = createNfsRemoveReply(xid, buffer, startOffset);
           break;
-        case NFSPROC_RMDIR:
-          xdrReplyBytes = createNfsRmdirReply(xid, buffer, startOffset);
-          break;
-        case NFSPROC_RENAME:
-          xdrReplyBytes = createNfsRenameReply(xid, buffer, startOffset);
-          break;
-        case NFSPROC_LINK:
-          xdrReplyBytes = createNfsLinkReply(xid, buffer, startOffset);
-          break;
-        case NFSPROC_READDIR:
-          xdrReplyBytes = createNfsReadDirReply(xid, buffer, startOffset);
-          break;
+//        case NFSPROC_RMDIR:
+//          xdrReplyBytes = createNfsRmdirReply(xid, buffer, startOffset);
+//          break;
+//        case NFSPROC_RENAME:
+//          xdrReplyBytes = createNfsRenameReply(xid, buffer, startOffset);
+//          break;
+//        case NFSPROC_LINK:
+//          xdrReplyBytes = createNfsLinkReply(xid, buffer, startOffset);
+//          break;
+//        case NFSPROC_READDIR:
+//          xdrReplyBytes = createNfsReadDirReply(xid, buffer, startOffset);
+//          break;
         case NFSPROC_READDIRPLUS:
           flowableXdrReplyBytes = createNfsReadDirPlusReply(xid, buffer, startOffset);
           break;
-        case NFSPROC_FSSTAT:
-          xdrReplyBytes = createNfsFSStatReply(xid, buffer, startOffset);
-          break;
+//        case NFSPROC_FSSTAT:
+//          xdrReplyBytes = createNfsFSStatReply(xid, buffer, startOffset);
+//          break;
         case NFSPROC_FSINFO:
           flowableXdrReplyBytes = createNfsFSInfoReply(xid);
           break;
@@ -497,28 +493,22 @@ public class TcpServerVerticle extends AbstractVerticle {
           flowableXdrReplyBytes = createNfsPathConfReply(xid, buffer, startOffset);
           break;
         case NFSPROC_COMMIT:
-          xdrReplyBytes = createNfsCommitReply(xid, buffer, startOffset);
+          flowableXdrReplyBytes = createNfsCommitReply(xid, buffer, startOffset);
           break;
         default:
           log.error("Unsupported NFS procedure: {}", procedureNumber);
-          return;
+          return Flowable.just(Buffer.buffer());
       }
 
-      if (xdrReplyBytes != null) {
-        log.info("Sending NFS response - XID: 0x{}, Size: {} bytes",
-            Integer.toHexString(xid), xdrReplyBytes.length);
+      if (flowableXdrReplyBytes != null) {
 
-        Flowable<Buffer> replyBuffer = Flowable.just(Buffer.buffer(xdrReplyBytes));
-
-        Subscriber<Buffer> socketSubscriber = socket.toSubscriber();
-        replyBuffer.safeSubscribe(socketSubscriber);
-      } else if (flowableXdrReplyBytes != null) {
-        Subscriber<Buffer> socketSubscriber = socket.toSubscriber();
-        flowableXdrReplyBytes.safeSubscribe(socketSubscriber);
+        return flowableXdrReplyBytes;
       }
     } catch (Exception e) {
       log.error("Error processing NFS request", e);
     }
+
+    return Flowable.just(Buffer.buffer());
   }
 
   private Flowable<Buffer> createNfsGetAttrReply(int xid, Buffer request, int startOffset) throws IOException {
@@ -927,7 +917,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     return fullResponseBuffer;
   }
 
-  private void handleNFSACLRequest(Buffer buffer, NetSocket socket) {
+  private Flowable<Buffer> handleNFSACLRequest(Buffer buffer) {
     try {
       // Parse RPC header
       //int recordMakerRaw = buffer.getInt(0);
@@ -960,25 +950,22 @@ public class TcpServerVerticle extends AbstractVerticle {
         case NFSPROC_ACL_GETACL:
           flowableXdrReplyBytes = createNfsACLGetACLReply(xid, buffer, startOffset);
           break;
-        case NFSPROC_ACL_SETACL:
-          xdrReplyBytes = createNfsACLSetACLReply(xid, buffer, startOffset);
-          break;
+//        case NFSPROC_ACL_SETACL:
+//          xdrReplyBytes = createNfsACLSetACLReply(xid, buffer, startOffset);
+//          break;
         default:
           log.error("Unsupported NFS_ACL procedure: {}", procedureNumber);
-          return;
+          return Flowable.just(Buffer.buffer());
       }
 
-      if (xdrReplyBytes != null) {
-        Flowable<Buffer> flowable = Flowable.just(Buffer.buffer(xdrReplyBytes));
-        Subscriber<Buffer> socketSubscriber = socket.toSubscriber();
-        flowable.safeSubscribe(socketSubscriber);
-      } else if (flowableXdrReplyBytes != null) {
-        Subscriber<Buffer> socketSubscriber = socket.toSubscriber();
-        flowableXdrReplyBytes.safeSubscribe(socketSubscriber);
+      if (flowableXdrReplyBytes != null) {
+        return flowableXdrReplyBytes;
       }
     } catch (Exception e) {
       log.error("Error processing NFS_ACL request", e);
     }
+
+    return Flowable.just(Buffer.buffer());
   }
 
   private Flowable<Buffer> createNfsACLGetACLReply(int xid, Buffer request, int startOffset) throws IOException {
@@ -1319,13 +1306,13 @@ public class TcpServerVerticle extends AbstractVerticle {
     return fullResponseBuffer.array();
   }
 
-  private byte[] createNfsCommitReply(int xid, Buffer request, int startOffset) throws IOException {
-    // Create reply
-    final int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
-    ByteBuffer rpcHeaderBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
-
+  private Flowable<Buffer> createNfsCommitReply(int xid, Buffer request, int startOffset) throws IOException {
     int fileHandleLength = request.getInt(startOffset);
     byte[] fileHandle = request.slice(startOffset + 4, startOffset + 4 + fileHandleLength).getBytes();
+
+    // Create reply
+    final int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
+    Flowable<Buffer> rpcHeaderBuffer = RpcUtil.writeAcceptedSuccessReplyHeader(xid);
 
     // NFS COMMIT reply
     // Structure:
@@ -1350,22 +1337,18 @@ public class TcpServerVerticle extends AbstractVerticle {
       .verifier(0L)
       .build();
 
-    COMMIT3res commit3res = COMMIT3res.createSuccess(commit3resok);
-    int rpcNfsLength = commit3res.getSerializedSize();
-    ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
-    rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);
-    commit3res.serialize(rpcNfsBuffer);
+    return Flowable.just(COMMIT3res.createSuccess(commit3resok))
+      .flatMap(commit3res -> {
+        int rpcNfsLength = commit3res.getSerializedSize();
 
-    // Record marking
-    int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
+        Flowable<Buffer> rpcNfsBuffer = commit3res.serializeToFlowable();
 
-    ByteBuffer fullResponseBuffer = ByteBuffer.allocate(4 + rpcHeaderLength + rpcNfsLength);
-    fullResponseBuffer.order(ByteOrder.BIG_ENDIAN);
-    fullResponseBuffer.putInt(recordMarkValue);
-    fullResponseBuffer.put(rpcHeaderBuffer.array());
-    fullResponseBuffer.put(rpcNfsBuffer.array());
+        // Record marking
+        int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
+        Buffer buffer = Buffer.buffer(4).appendInt(recordMarkValue);
 
-    return fullResponseBuffer.array();
+        return Flowable.concat(Flowable.just(buffer), rpcHeaderBuffer, rpcNfsBuffer);
+      });
   }
 
   private Flowable<Buffer> createNfsCreateReply(int xid, Buffer request, int startOffset) throws IOException {
