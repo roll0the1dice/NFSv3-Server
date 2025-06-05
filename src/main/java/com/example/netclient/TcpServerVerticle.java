@@ -41,6 +41,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Flow;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 
@@ -78,6 +79,8 @@ public class TcpServerVerticle extends AbstractVerticle {
   private static final Map<ByteArrayKeyWrapper, ByteArrayKeyWrapper> fileHandleToParentFileHandle = new ConcurrentHashMap<>();
   private static final Map<ByteArrayKeyWrapper, List<ByteArrayKeyWrapper>> fileHandleToChildrenFileHandle = new ConcurrentHashMap<>();
 
+  private static final Map<ByteArrayKeyWrapper, Integer> fileHandleState = new ConcurrentHashMap<>();
+
   private static final String STATIC_FILES_ROOT = "public";
   private static final String S3HOST = "172.20.123.124";
   private static final String BUCKET = "mybucket";
@@ -101,11 +104,35 @@ public class TcpServerVerticle extends AbstractVerticle {
     // 设置连接处理器
     server.connectHandler(socket -> {
       Flowable<Buffer> response = convertToFlowableRequest(socket)
+        .doOnNext(rpcFragment -> {
+          Buffer buffer = rpcFragment.getData();
+          String receivedData = buffer.toString("UTF-8");
+          log.info("从客户端 [" + socket.remoteAddress() + "] 收到数据大小: " + receivedData.length());
+
+          log.info("Raw request buffer (" + buffer.length() + " bytes):");
+          // 简单的十六进制打印
+//          for (int i = 0; i < buffer.length(); i++) {
+//            System.out.printf("%02X ", buffer.getByte(i));
+//            if ((i + 1) % 16 == 0 || i == buffer.length() - 1) {
+//              System.out.println();
+//            }
+//          }
+//          log.info("---- End of Raw Buffer ----");
+        })
         .flatMap(rpcFragment -> {
           Buffer buffer = rpcFragment.getData();
+          //int recordMakerRaw = fullMessage.getInt(0);
+          int xid = buffer.getInt(0);
+          int msgType = buffer.getInt(4); // Should be CALL (0)
+          int rpcVersion = buffer.getInt(8); // Should be 2
+          int programNumber = buffer.getInt(12);
+          int programVersion = buffer.getInt(16);
+          int procedureNumber = buffer.getInt(20);
+
           return processCompleteMessage(buffer);
         });
 
+      // 订阅启动整个链
       Subscriber<Buffer> socketSubscriber = socket.toSubscriber();
       response.safeSubscribe(socketSubscriber);
     });
@@ -766,6 +793,8 @@ public class TcpServerVerticle extends AbstractVerticle {
     return fullResponseBuffer;
   }
 
+  private static final ConcurrentHashMap<ByteArrayKeyWrapper, List<Buffer>> requestCache = new ConcurrentHashMap<>();
+
   private Flowable<Buffer> createNfsWriteReply(int xid, Buffer request, int startOffset) throws IOException, URISyntaxException {
     // Parse file handle, offset, and data from request
     int fhandleLength = request.getInt(startOffset);
@@ -774,16 +803,40 @@ public class TcpServerVerticle extends AbstractVerticle {
     int count = request.getInt(startOffset + 4 + fhandleLength + 8);
     int stable = request.getInt(startOffset + 4 + fhandleLength + 8 + 4);
     int dataOfLength = request.getInt(startOffset + 4 + fhandleLength + 8);
-    byte[] data = request.slice(startOffset + 4 + fhandleLength + 8 + 12,
-        startOffset + 4 + fhandleLength + 8 + 12 + dataOfLength).getBytes();
+    Buffer data = request.slice(startOffset + 4 + fhandleLength + 8 + 12,
+        startOffset + 4 + fhandleLength + 8 + 12 + dataOfLength);
 
-    log.info("NFS Write Reply: {}", new String(data, StandardCharsets.UTF_8));
+    ByteArrayKeyWrapper byteArrayKeyWrapper = new ByteArrayKeyWrapper(fhandle);
+    // 检查是否需要缓存数据
+    Single<WRITE3res> write3res = Single.never();
+    if (RequestState.shouldCache(byteArrayKeyWrapper)) {
+      requestCache.compute(byteArrayKeyWrapper, (key, existingList) -> {
+        if (existingList == null) {
+          existingList = new ArrayList<>(); // Consider Collections.synchronizedList or CopyOnWriteArrayList if accessed outside compute
+        }
+        existingList.add(data);
+        return existingList;
+      });
+      PreOpAttr before = PreOpAttr.builder().attributesFollow(0).build();
+      PostOpAttr after = PostOpAttr.builder().attributesFollow(0).build();
+
+      WccData fileWcc = WccData.builder().before(before).after(after).build();
+      WRITE3resok write3resok = WRITE3resok.builder()
+        .fileWcc(fileWcc)
+        .count(count)
+        .committed(WRITE3resok.StableHow.UNSTABLE)
+        .verifier(0L)
+        .build();
+
+      write3res = Single.just(WRITE3res.createOk(write3resok));
+    } else {
+      write3res = handleNfsWriteAsync(fhandle, data, dataOfLength, count);
+    }
+
 
     // Create reply
     final int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
     Flowable<Buffer> rpcHeaderBuffer = RpcUtil.writeAcceptedSuccessReplyHeader(xid);
-
-    Single<WRITE3res> write3res = handleNfsWriteAsync(fhandle, data, dataOfLength, count);
 
     return write3res.flatMapPublisher(write3res1 -> {
       int rpcNfsLength = write3res1.getSerializedSize();
@@ -798,14 +851,14 @@ public class TcpServerVerticle extends AbstractVerticle {
     });
   }
 
-  private Single<WRITE3res> handleNfsWriteAsync(byte[] fhandle, byte[] data, int dataOfLength, int count) throws URISyntaxException {
+  private Single<WRITE3res> handleNfsWriteAsync(byte[] fhandle, Buffer data, int dataOfLength, int count) throws URISyntaxException {
     ByteArrayKeyWrapper byteArrayKeyWrapper = new ByteArrayKeyWrapper(fhandle);
     FAttr3 attributes = fileHandleToFAttr3.getOrDefault(byteArrayKeyWrapper, null);
 
     if (attributes != null) {
       String filename = fileHandleToFileName.getOrDefault(byteArrayKeyWrapper,"");
       String targetUrl = String.format("http://%s/%s/%s", S3HOST, BUCKET, filename);
-      Flowable<Buffer> fileBodyFlowable = Flowable.just(Buffer.buffer(data));
+      Flowable<Buffer> fileBodyFlowable = Flowable.just(data);
       Single<WRITE3res> response = upDownHttpClient.put(targetUrl, fileBodyFlowable).subscribeOn(Schedulers.io()).observeOn(Schedulers.io())
           .flatMap(buffer1 -> {
             log.info("S3 Upload Response: {}", buffer1.toString());
@@ -1167,7 +1220,6 @@ public class TcpServerVerticle extends AbstractVerticle {
     log.info("ACCESS response - file type: {}, granted access: 0x{}",
       fileType, Integer.toHexString(accessFlags));
 
-
     FAttr3 dirAttr3 = fileHandleToFAttr3.getOrDefault(new ByteArrayKeyWrapper(fhandle), null);
     PostOpAttr objAttributes = PostOpAttr.builder()
       .attributesFollow(dirAttr3 != null ? 1 : 0)
@@ -1306,7 +1358,7 @@ public class TcpServerVerticle extends AbstractVerticle {
     return fullResponseBuffer.array();
   }
 
-  private Flowable<Buffer> createNfsCommitReply(int xid, Buffer request, int startOffset) throws IOException {
+  private Flowable<Buffer> createNfsCommitReply(int xid, Buffer request, int startOffset) throws IOException, URISyntaxException {
     int fileHandleLength = request.getInt(startOffset);
     byte[] fileHandle = request.slice(startOffset + 4, startOffset + 4 + fileHandleLength).getBytes();
 
@@ -1323,26 +1375,56 @@ public class TcpServerVerticle extends AbstractVerticle {
     //   post_op_attr present flag (4 bytes)
 
     ByteArrayKeyWrapper keyWrapper = new ByteArrayKeyWrapper(fileHandle);
-    FAttr3 attritbutes = fileHandleToFAttr3.getOrDefault(keyWrapper, null);
+    fileHandleState.put(keyWrapper, 1);
 
-    PreOpAttr befor = PreOpAttr.builder().attributesFollow(0).build();
-    PostOpAttr after = PostOpAttr.builder().attributesFollow(attritbutes != null ? 1 : 0).attributes(attritbutes).build();
+    Single<COMMIT3res> response = Single.never();
+    List<Buffer> currentDataList = requestCache.getOrDefault(keyWrapper, null);
+    if (currentDataList != null) {
+      synchronized (currentDataList) {
+        Buffer combinedBuffer = Buffer.buffer();
+        for (Buffer currentData : currentDataList) {
+          combinedBuffer.appendBuffer(currentData);
+        }
+        log.info("commit -- upload buffer length: {}", combinedBuffer.length());
+        String filename = fileHandleToFileName.getOrDefault(keyWrapper,"");
+        String targetUrl = String.format("http://%s/%s/%s", S3HOST, BUCKET, filename);
+        Flowable<Buffer> fileBodyFlowable = Flowable.just(combinedBuffer);
+        response = upDownHttpClient.put(targetUrl, fileBodyFlowable).subscribeOn(Schedulers.io()).observeOn(Schedulers.io())
+          .flatMap(buffer -> {
+            FAttr3 attritbutes = fileHandleToFAttr3.getOrDefault(keyWrapper, null);
 
-    WccData fileWcc =  WccData.builder()
-      .before(befor)
-      .after(after)
-      .build();
-    COMMIT3resok commit3resok = COMMIT3resok.builder()
-      .fileWcc(fileWcc)
-      .verifier(0L)
-      .build();
+            PreOpAttr befor = PreOpAttr.builder().attributesFollow(0).build();
+            PostOpAttr after = PostOpAttr.builder().attributesFollow(attritbutes != null ? 1 : 0).attributes(attritbutes).build();
 
-    return Flowable.just(COMMIT3res.createSuccess(commit3resok))
-      .flatMap(commit3res -> {
+            WccData fileWcc =  WccData.builder().before(befor).after(after).build();
+            COMMIT3resok commit3resok = COMMIT3resok.builder().fileWcc(fileWcc).verifier(0L).build();
+
+            return Single.just(COMMIT3res.createSuccess(commit3resok));
+          });
+      }
+    } else {
+      FAttr3 attritbutes = fileHandleToFAttr3.getOrDefault(keyWrapper, null);
+
+      PreOpAttr befor = PreOpAttr.builder().attributesFollow(0).build();
+      PostOpAttr after = PostOpAttr.builder().attributesFollow(attritbutes != null ? 1 : 0).attributes(attritbutes).build();
+
+      WccData fileWcc =  WccData.builder()
+        .before(befor)
+        .after(after)
+        .build();
+      COMMIT3resok commit3resok = COMMIT3resok.builder()
+        .fileWcc(fileWcc)
+        .verifier(0L)
+        .build();
+
+      response = Single.just(COMMIT3res.createSuccess(commit3resok));
+    }
+
+    return response
+      .flatMapPublisher(commit3res -> {
         int rpcNfsLength = commit3res.getSerializedSize();
 
         Flowable<Buffer> rpcNfsBuffer = commit3res.serializeToFlowable();
-
         // Record marking
         int recordMarkValue = 0x80000000 | (rpcHeaderLength + rpcNfsLength);
         Buffer buffer = Buffer.buffer(4).appendInt(recordMarkValue);

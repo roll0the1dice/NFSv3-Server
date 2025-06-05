@@ -1,65 +1,15 @@
-package com.example.netclient.utils;
+package com.example.netclient;
 
-import com.example.netclient.enums.RpcConstants;
 import io.reactivex.Flowable;
 import io.reactivex.FlowableTransformer;
-import io.vertx.core.buffer.Buffer;
+import io.reactivex.schedulers.Schedulers;
+import io.vertx.core.buffer.Buffer; // Vert.x Buffer
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
+import java.util.concurrent.TimeUnit;
 
-public class RpcUtil {
-  /**
-   * 将标准的RPC成功响应头部写入给定的ByteBuffer。
-   * 调用者需要确保ByteBuffer有足够的剩余空间，并且其字节序已设置。
-   *
-   * @param buffer 要写入的ByteBuffer
-   * @param xid    事务ID
-   */
-  public static void writeAcceptedSuccessReplyHeader(ByteBuffer buffer, int xid) {
-    // 确保字节序 (如果调用者尚未设置，可以在这里设置，但通常由外部控制)
-     if (buffer.order() != ByteOrder.BIG_ENDIAN) {
-         buffer.order(ByteOrder.BIG_ENDIAN);
-     }
-
-    buffer.putInt(xid);                                  // 事务ID
-    buffer.putInt(RpcConstants.MSG_TYPE_REPLY);          // 消息类型: 回复 (1)
-    buffer.putInt(RpcConstants.REPLY_STAT_MSG_ACCEPTED); // 回复状态: 接受 (0)
-    buffer.putInt(RpcConstants.VERF_FLAVOR_AUTH_NONE);   // 认证机制: 无 (0)
-    buffer.putInt(RpcConstants.VERF_LENGTH_ZERO);        // 认证数据长度: 0
-    buffer.putInt(RpcConstants.ACCEPT_STAT_SUCCESS);     // 接受状态: 成功 (0)
-  }
-
-  public static Flowable<Buffer> writeAcceptedSuccessReplyHeader(int xid) {
-    // 确保字节序 (如果调用者尚未设置，可以在这里设置，但通常由外部控制)
-    int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
-    Buffer rpcHeaderBuffer = Buffer.buffer(rpcHeaderLength);
-
-    rpcHeaderBuffer.appendInt(xid);                                  // 事务ID
-    rpcHeaderBuffer.appendInt(RpcConstants.MSG_TYPE_REPLY);          // 消息类型: 回复 (1)
-    rpcHeaderBuffer.appendInt(RpcConstants.REPLY_STAT_MSG_ACCEPTED); // 回复状态: 接受 (0)
-    rpcHeaderBuffer.appendInt(RpcConstants.VERF_FLAVOR_AUTH_NONE);   // 认证机制: 无 (0)
-    rpcHeaderBuffer.appendInt(RpcConstants.VERF_LENGTH_ZERO);        // 认证数据长度: 0
-    rpcHeaderBuffer.appendInt(RpcConstants.ACCEPT_STAT_SUCCESS);     // 接受状态: 成功 (0)
-
-    return Flowable.just(rpcHeaderBuffer);
-  }
-
-  /**
-   * 创建并返回一个包含标准RPC成功响应头部的ByteBuffer。
-   *
-   * @param xid 事务ID
-   * @return 一个新的ByteBuffer，包含了头部数据，并已准备好读取 (flipped)
-   */
-  public static ByteBuffer createAcceptedSuccessReplyHeaderBuffer(int xid) {
-    ByteBuffer headerBuffer = ByteBuffer.allocate(RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH);
-    headerBuffer.order(ByteOrder.BIG_ENDIAN);
-    writeAcceptedSuccessReplyHeader(headerBuffer, xid);
-    headerBuffer.flip(); // 准备好被读取或发送
-    return headerBuffer;
-  }
+public class FlowableVertxBufferBySize {
 
   /**
    * A FlowableTransformer that buffers Vert.x Buffer objects until the accumulated size
@@ -155,5 +105,55 @@ public class RpcUtil {
     };
   }
 
+  // --- 示例使用 ---
+  public static void main(String[] args) throws InterruptedException {
+    final int PART_SIZE = 10; // S3 Part size (example, usually 5MB+)
 
+    // 模拟NFS WRITE calls (数据块)
+    Flowable<Buffer> nfsWriteCalls = Flowable.create(emitter -> {
+      System.out.println("Emitter: Emitting 3 bytes");
+      emitter.onNext(Buffer.buffer(new byte[]{1, 2, 3}));        // 3 bytes
+      Thread.sleep(100);
+      System.out.println("Emitter: Emitting 4 bytes");
+      emitter.onNext(Buffer.buffer(new byte[]{4, 5, 6, 7}));    // 4 bytes (total 7)
+      Thread.sleep(100);
+      System.out.println("Emitter: Emitting 4 bytes (will trigger flush)");
+      emitter.onNext(Buffer.buffer(new byte[]{8, 9, 10, 11}));  // 4 bytes (total 11 -> emit [1..10], remaining [11])
+      Thread.sleep(100);
+      System.out.println("Emitter: Emitting 2 bytes");
+      emitter.onNext(Buffer.buffer(new byte[]{12, 13}));       // 2 bytes (total 3 with [11] -> [11,12,13])
+      Thread.sleep(100);
+      System.out.println("Emitter: Emitting 8 bytes (will trigger flush)");
+      emitter.onNext(Buffer.buffer(new byte[]{14,15,16,17,18,19,20,21})); // 8 bytes (total 11 with [11,12,13] -> emit [11..20], remaining [21])
+      Thread.sleep(100);
+      System.out.println("Emitter: Emitting 1 byte");
+      emitter.onNext(Buffer.buffer(new byte[]{22}));           // 1 byte (total 2 with [21] -> [21,22])
+      System.out.println("Emitter: Completing");
+      emitter.onComplete();
+    }, io.reactivex.BackpressureStrategy.BUFFER);
+
+    System.out.println("Subscribing to buffered S3 parts (Vert.x Buffer)...");
+
+    nfsWriteCalls
+      .subscribeOn(Schedulers.computation()) // Simulate NFS calls on a different thread
+      .compose(bufferBySize(PART_SIZE))    // 应用我们的自定义转换器
+      .observeOn(Schedulers.single())        // Observe results on a single thread for ordered printing
+      .doOnNext(s3Part -> {
+        System.out.println(Thread.currentThread().getName() +
+          " - Uploading S3 Part (Vert.x Buffer): " + s3Part.getBytes().length + " bytes -> " + s3Part.toString());
+        // 在这里执行实际的 S3 UploadPart 操作
+        // InputStream inputStream = new BufferInputStream(s3Part);
+        // s3Client.uploadPart(..., inputStream, s3Part.length(), ...);
+        try {
+          Thread.sleep(50); // 模拟上传延迟
+        } catch (InterruptedException e) {
+          e.printStackTrace();
+        }
+      })
+      .doOnComplete(() -> System.out.println(Thread.currentThread().getName() + " - All S3 parts uploaded and MultipartUpload completed."))
+      .doOnError(throwable -> System.err.println(Thread.currentThread().getName() + " - Error during S3 part processing: " + throwable))
+      .blockingSubscribe(); // For main thread to wait in this example
+
+    System.out.println("Main thread finished.");
+  }
 }

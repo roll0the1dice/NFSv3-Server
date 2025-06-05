@@ -1,5 +1,12 @@
 package com.example.netclient.httpclient;
 
+import com.example.netclient.model.DTO.CompleteMultipartUpload;
+import com.example.netclient.model.DTO.InitiateMultipartUploadResult;
+import com.example.netclient.model.DTO.Part;
+import com.example.netclient.model.DTO.PartInfo;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.dataformat.xml.XmlMapper;
+import com.fasterxml.jackson.dataformat.xml.ser.ToXmlGenerator;
 import io.reactivex.Flowable;
 import io.reactivex.Single;
 import io.reactivex.disposables.Disposable;
@@ -21,8 +28,9 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.util.HashMap;
-import java.util.Map;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Data
@@ -131,18 +139,21 @@ public class UpDownHttpClient {
     return responseBodySingle;
   }
 
-  public Single<Buffer> putChunkFile(String targetUrl, Flowable<Buffer> fileBodyFlowable) throws URISyntaxException {
-    URI uri = new URI(targetUrl);
-    String host = uri.getHost();
-    String resourcePath = uri.getPath();
-    AwsSigner awsSigner = AwsSignerCreater.createSigner(signerType, accessKey, secretKey, region, service);
+  public Single<Buffer> initMultiPartUpload(String host, String resourcePath) throws URISyntaxException {
+    if (client == null) {
+      throw new IllegalArgumentException("httpClient is null");
+    }
 
-    Single<HttpClientRequest> requestSingle = client.rxRequest(HttpMethod.PUT, 80, host, resourcePath);
+    String url = String.format("http://%s%s?uploads=", host, resourcePath);
+
+    Single<HttpClientRequest> requestSingle = client.rxRequest(HttpMethod.POST, url);
     Single<Buffer> responseBodySingle = requestSingle.flatMap(httpClientRequest -> {
+        System.out.println("HttpClientRequest obtained. Sending file content...");
         Map<String, String> pseudoHeaders = new HashMap<>();
         pseudoHeaders.put("x-amz-content-sha256", "UNSIGNED-PAYLOAD");
 
-        String authorization = awsSigner.calculateAuthorization(String.valueOf(HttpMethod.PUT), targetUrl, pseudoHeaders, null);
+        AwsSigner awsSigner = AwsSignerCreater.createSigner(signerType, accessKey, secretKey, region, service);
+        String authorization = awsSigner.calculateAuthorization(String.valueOf(HttpMethod.POST), url, pseudoHeaders, null);
 
         for (Map.Entry<String, String> entry : pseudoHeaders.entrySet()) {
           httpClientRequest.putHeader(entry.getKey(), entry.getValue());
@@ -154,18 +165,205 @@ public class UpDownHttpClient {
           httpClientRequest.putHeader("x-amz-date", awsSigner.getAmzDate());
         }
 
-        return httpClientRequest.rxSend(fileBodyFlowable);
+        return httpClientRequest.rxSend();
       })
-      .flatMap(httpClientResponse -> {
+      .flatMap(httpClientResponse -> { // Transform HttpClientResponse to its body
         System.out.println("Upload successful! Server response status: " + httpClientResponse.statusCode() + " " + httpClientResponse.statusMessage());
+        // Check status code before attempting to get body as a "success"
         if (httpClientResponse.statusCode() >= 200 && httpClientResponse.statusCode() < 300) {
-          return httpClientResponse.rxBody();
+          return httpClientResponse.rxBody(); // This returns Single<Buffer>
         } else {
+          // Non-successful HTTP status. We want the outer Single to fail.
+          // We'll try to get the body to include it in the error message.
           return httpClientResponse.rxBody();
         }
       });
 
     return responseBodySingle;
+  }
+
+
+  public Single<Buffer> completeMultiPartUpload(String host, String resourcePath, String uploadId, List<Part> MultiPartUploadList) throws URISyntaxException, JsonProcessingException {
+    String url = String.format("http://%s%s?uploadId=%s", host, resourcePath, uploadId);
+
+    // 构造XML字面量字符串
+    XmlMapper xmlMapper = new XmlMapper();
+    xmlMapper.configure(ToXmlGenerator.Feature.WRITE_XML_DECLARATION, false);
+
+    CompleteMultipartUpload completeMultipartUpload = new CompleteMultipartUpload();
+    List<Part> partList = MultiPartUploadList.stream().sorted(Comparator.comparing(Part::getPartNumber))
+      .collect(Collectors.toList());
+    completeMultipartUpload.setParts(partList);
+
+    String xmlLiteral = xmlMapper.writeValueAsString(completeMultipartUpload);
+
+    Single<HttpClientRequest> requestSingle = client.rxRequest(HttpMethod.POST, url);
+
+    Single<Buffer> responseBodySingle = requestSingle.flatMap(httpClientRequest -> {
+        System.out.println("HttpClientRequest obtained. Sending file content...");
+        Map<String, String> pseudoHeaders = new HashMap<>();
+        pseudoHeaders.put("x-amz-content-sha256", "UNSIGNED-PAYLOAD");
+
+        AwsSigner awsSigner = AwsSignerCreater.createSigner(signerType, accessKey, secretKey, region, service);
+        String authorization = awsSigner.calculateAuthorization(String.valueOf(HttpMethod.POST), url, pseudoHeaders, null);
+
+        for (Map.Entry<String, String> entry : pseudoHeaders.entrySet()) {
+          httpClientRequest.putHeader(entry.getKey(), entry.getValue());
+        }
+        httpClientRequest.putHeader("Authorization", authorization);
+        if (signerType == AwsSignerCreater.SignerType.AWS_V2) {
+          httpClientRequest.putHeader("Date", awsSigner.getAmzDate());
+        } else {
+          httpClientRequest.putHeader("x-amz-date", awsSigner.getAmzDate());
+        }
+
+        return httpClientRequest.rxSend(Buffer.buffer(xmlLiteral));
+      })
+      .flatMap(httpClientResponse -> { // Transform HttpClientResponse to its body
+        System.out.println("Upload successful! Server response status: " + httpClientResponse.statusCode() + " " + httpClientResponse.statusMessage());
+        // Check status code before attempting to get body as a "success"
+        if (httpClientResponse.statusCode() >= 200 && httpClientResponse.statusCode() < 300) {
+          return httpClientResponse.rxBody(); // This returns Single<Buffer>
+        } else {
+          // Non-successful HTTP status. We want the outer Single to fail.
+          // We'll try to get the body to include it in the error message.
+          return httpClientResponse.rxBody();
+        }
+      })
+      .doFinally(() -> {
+        System.out.println("Upload finished or failed. Closing file: " + url);
+      });
+
+    return responseBodySingle;
+  }
+
+  public Single<Buffer> performMultiPartUpload(String host, String resourcePath, Flowable<Buffer> fileBodyFlowable) throws URISyntaxException, JsonProcessingException {
+    try {
+      return this.initMultiPartUpload(host, resourcePath)
+        .flatMapPublisher(buffer -> {
+          String initResponseXmlText = buffer.toString();
+
+          XmlMapper xmlMapper = new XmlMapper();
+          InitiateMultipartUploadResult initiateMultipartUploadResult
+            = xmlMapper.readValue(initResponseXmlText, InitiateMultipartUploadResult.class);
+          if (initiateMultipartUploadResult == null || initiateMultipartUploadResult.getUploadId() == null) {
+            throw new IllegalArgumentException("InitiateMultipartUploadResult is null");
+          }
+
+          String uploadId = initiateMultipartUploadResult.getUploadId();
+          log.debug("INFO: Multipart upload initiated. UploadId: {}", uploadId);
+          List<PartInfo> partsToUpload = new ArrayList<>(); // this.calculatePartInfo(fileSize, transferConfig.getMultiPartChunkSize(), uploadId);
+
+          return Flowable.fromIterable(partsToUpload)
+            .flatMapSingle(partInfo -> {
+              return this.uploadPartWorkers(host, resourcePath, uploadId, partInfo, fileBodyFlowable);
+            });
+        })
+        .toList()
+        .flatMap(parts -> {
+          //String uploadId = parts.get(0).getUploadId();
+          String uploadId = parts.get(0).getUploadId();
+          return this.completeMultiPartUpload(host, resourcePath, uploadId, parts);
+        });
+      //log.debug("SUCCESS: Multipart upload completed. Final ETag: {}", finalResponse);
+    } catch (URISyntaxException e) {
+      throw new RuntimeException(e);
+    }
+  }
+
+  public Single<Buffer> upLoadPart(
+    String host,
+    String resourcePath,
+    Integer partNumber,
+    String uploadId,
+    Flowable<Buffer> payLoad) throws URISyntaxException {
+    String targetUrl = String.format("http://%s%s?uploadId=%s&partNumber=%s", host, resourcePath, uploadId, partNumber);
+
+    AwsSigner awsSigner = AwsSignerCreater.createSigner(signerType, accessKey, secretKey, region, service);
+    Single<HttpClientRequest> requestSingle = client.rxRequest(HttpMethod.PUT, targetUrl);
+
+    Single<Buffer> responseBodySingle = requestSingle.flatMap(httpClientRequest -> {
+        System.out.println("HttpClientRequest obtained. Sending file content...");
+
+        Map<String, String> pseudoHeaders = new HashMap<>();
+        String authorization = awsSigner.calculateAuthorization(String.valueOf(HttpMethod.PUT), targetUrl, pseudoHeaders, null);
+
+        for (Map.Entry<String, String> header : pseudoHeaders.entrySet()) {
+          httpClientRequest.putHeader(header.getKey(), header.getValue());
+        }
+        httpClientRequest.putHeader("Authorization", authorization);
+        if (signerType == AwsSignerCreater.SignerType.AWS_V2) {
+          httpClientRequest.putHeader("Date", awsSigner.getAmzDate());
+        } else {
+          httpClientRequest.putHeader("x-amz-date", awsSigner.getAmzDate());
+        }
+
+        return httpClientRequest.rxSend(payLoad);
+      })
+      .flatMap(httpClientResponse -> { // Transform HttpClientResponse to its body
+        // Check status code before attempting to get body as a "success"
+        if (httpClientResponse.statusCode() >= 200 && httpClientResponse.statusCode() < 300) {
+
+          String ETag = httpClientResponse.getHeader("ETag");
+
+          return Single.just(Buffer.buffer(ETag.getBytes(StandardCharsets.UTF_8))); // This returns Single<Buffer>
+        } else {
+          // Non-successful HTTP status. We want the outer Single to fail.
+          // We'll try to get the body to include it in the error message.
+          return httpClientResponse.rxBody();
+        }
+      });
+
+    return responseBodySingle;
+  }
+
+  public Single<Part> uploadPartWorkers(String host, String resourcePath, String upLoadId, PartInfo partInfo, Flowable<Buffer> flowableBuffer) throws URISyntaxException {
+    int partNumber = partInfo.getPartNumber();
+    Long offset = partInfo.getOffset();
+    int size = partInfo.getSize();
+
+    Single<Part> Etags = this.upLoadPart(host, resourcePath, partNumber, upLoadId, flowableBuffer)
+      .flatMap(buffer -> {
+        String eTag = buffer.toString();
+        Part part = Part.builder().partNumber(partNumber).eTag(eTag).uploadId(upLoadId).build();
+
+        return Single.just(part);
+      });
+
+    return Etags;
+  }
+
+
+  public List<PartInfo> calculatePartInfo(Long fileSize, Integer chunkSize, String uploadId) {
+    long numParts = (long) Math.ceil((double) fileSize /chunkSize);
+    List<PartInfo> partInfos = new ArrayList<>();
+
+    for (int i = 0; i < numParts; i++) {
+      int partNumber = i + 1;
+      long offset = (long) i * chunkSize;
+      int size = (int) Math.min(chunkSize, fileSize - offset);
+      partInfos.add(PartInfo.builder()
+        .partNumber(partNumber)
+        .offset(offset)
+        .size(size)
+        .uploadId(uploadId)
+        .build());
+    }
+    return partInfos;
+  }
+
+
+  public void uploadFile(String targetUrl, Flowable<Buffer> payLoadFlowable) throws URISyntaxException, JsonProcessingException {
+    URI uri = new URI(targetUrl);
+    String host = uri.getHost();
+    String resourcePath = uri.getPath();
+
+    this.performMultiPartUpload(host, resourcePath, payLoadFlowable).subscribe(
+      buffer -> {
+        System.out.println("response: " + buffer.toString());
+      },
+      Throwable::printStackTrace
+    );
   }
 
   public static void main(String[] args) throws URISyntaxException {
