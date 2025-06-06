@@ -15,7 +15,14 @@ public class GETATTR3res extends AbstractNfsResponse<GETATTR3resok, GETATTR3resf
     super(status, resok, resfail);
   }
 
-  public static GETATTR3res createSuccess(GETATTR3resok resok) {
-    return new GETATTR3res(NfsStat3.NFS3_OK, resok, null);
+  public static GETATTR3res createOk(GETATTR3resok okData) {
+    return new GETATTR3res(NfsStat3.NFS3_OK, okData, null);
+  }
+
+  public static GETATTR3res createFail(NfsStat3 failStatus, GETATTR3resfail failData) {
+    if (failStatus == NfsStat3.NFS3_OK) {
+      throw new IllegalArgumentException("For failure, status cannot be NFS3_OK");
+    }
+    return new GETATTR3res(failStatus, null, failData);
   }
 }

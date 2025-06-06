@@ -18,9 +18,9 @@ import org.slf4j.LoggerFactory;
 
 public class RequestState {
   private static final Logger log = LoggerFactory.getLogger(RequestState.class);
-  private static final int CACHE_THRESHOLD = 1024 * 1024; // 1MB
-  private static final int EMITTER_THRESHOLD = 5 * 1024 * 1024; // 5MB
-  private static final long INACTIVITY_TIMEOUT = 5000; // 5 seconds
+  public static final int CACHE_THRESHOLD = 1024 * 1024; // 1MB
+  public static final int EMITTER_THRESHOLD = 5 * 1024 * 1024; // 5MB
+  public static final long INACTIVITY_TIMEOUT = 5000; // 5 seconds
 
   private static final ConcurrentHashMap<ByteArrayKeyWrapper, List<Buffer>> requestCache = new ConcurrentHashMap<>();
   private static final ConcurrentHashMap<ByteArrayKeyWrapper, Subject<Buffer>> requestSubjects = new ConcurrentHashMap<>();

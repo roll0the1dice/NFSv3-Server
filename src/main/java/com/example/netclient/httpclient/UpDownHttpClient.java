@@ -7,6 +7,7 @@ import com.example.netclient.model.DTO.PartInfo;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.dataformat.xml.XmlMapper;
 import com.fasterxml.jackson.dataformat.xml.ser.ToXmlGenerator;
+import io.reactivex.BackpressureStrategy;
 import io.reactivex.Flowable;
 import io.reactivex.Single;
 import io.reactivex.disposables.Disposable;
@@ -14,7 +15,10 @@ import io.reactivex.schedulers.Schedulers;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.file.FileProps;
 import io.vertx.core.file.OpenOptions;
+import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpMethod;
+import io.vertx.core.net.ProxyOptions;
+import io.vertx.core.net.ProxyType;
 import io.vertx.reactivex.core.Vertx;
 import io.vertx.reactivex.core.file.FileSystem;
 import io.vertx.reactivex.core.http.HttpClient;
@@ -132,6 +136,47 @@ public class UpDownHttpClient {
         if (httpClientResponse.statusCode() >= 200 && httpClientResponse.statusCode() < 300) {
           return httpClientResponse.rxBody();
         } else {
+          return httpClientResponse.rxBody();
+        }
+      });
+
+    return responseBodySingle;
+  }
+
+  public Single<Buffer> post(String targetUrl, Flowable<Buffer> fileBodyFlowable, long fileSize) throws URISyntaxException {
+    URI uri = new URI(targetUrl);
+    String host = uri.getHost();
+    String resourcePath = uri.getPath();
+    String query = uri.getQuery();
+
+    AwsSigner awsSigner = AwsSignerCreater.createSigner(signerType, accessKey, secretKey, region, service);
+
+    Single<HttpClientRequest> requestSingle = client.rxRequest(HttpMethod.POST, 80, host, resourcePath + "?" + query);
+    Single<Buffer> responseBodySingle = requestSingle.flatMap(httpClientRequest -> {
+        Map<String, String> pseudoHeaders = new HashMap<>();
+        pseudoHeaders.put("x-amz-content-sha256", "UNSIGNED-PAYLOAD");
+        pseudoHeaders.put("Content-Length", String.valueOf(fileSize));
+
+        String authorization = awsSigner.calculateAuthorization(String.valueOf(HttpMethod.POST), targetUrl, pseudoHeaders, null);
+
+        for (Map.Entry<String, String> entry : pseudoHeaders.entrySet()) {
+          httpClientRequest.putHeader(entry.getKey(), entry.getValue());
+        }
+        httpClientRequest.putHeader("Authorization", authorization);
+        if (signerType == AwsSignerCreater.SignerType.AWS_V2) {
+          httpClientRequest.putHeader("Date", awsSigner.getAmzDate());
+        } else {
+          httpClientRequest.putHeader("x-amz-date", awsSigner.getAmzDate());
+        }
+
+        return httpClientRequest.rxSend(fileBodyFlowable);
+      })
+      .flatMap(httpClientResponse -> {
+        System.out.println("Upload successful! Server response status: " + httpClientResponse.statusCode() + " " + httpClientResponse.statusMessage());
+        if (httpClientResponse.statusCode() >= 200 && httpClientResponse.statusCode() < 300) {
+          return Single.just(Buffer.buffer(httpClientResponse.headers().get("x-amz-next-append-position")));
+        } else {
+          log.info("x-amz-next-append-position: {}", httpClientResponse.headers().get("x-amz-next-append-position"));
           return httpClientResponse.rxBody();
         }
       });
@@ -374,7 +419,7 @@ public class UpDownHttpClient {
     String host = "172.20.123.124";
     String bucket = "mybucket";
     String key = "hello";
-    String targetUrl = String.format("http://%s/%s/%s", host, bucket, key);
+    //String targetUrl = String.format("http://%s/%s/%s", host, bucket, key);
     String resourcePath = String.format("/%s/%s", bucket, key);
     String accessKey = "MAKIC8SGQQS8424CZT07";
     String secretKey = "tDFRk9bGzS0j5JXPrdS0qSXL40zSn3xbBRZsPfEH";
@@ -390,29 +435,57 @@ public class UpDownHttpClient {
       .signerType(AwsSignerCreater.SignerType.AWS_V4)
       .build();
 
-//    Disposable subscribe = fs.rxOpen("test_file.txt", new OpenOptions().setRead(true))
-//      .flatMap(asyncFile -> {
-//        log.info("asyncFile: {}", asyncFile.size());
+
+    Flowable<Buffer> b1 = fs.rxOpen("test_file.txt", new OpenOptions().setRead(true)).flatMapPublisher(asyncFile -> {
+      return asyncFile.toFlowable();
+    });
+
+    Flowable<Buffer> b2 = fs.rxOpen("test_file.txt", new OpenOptions().setRead(true)).flatMapPublisher(asyncFile -> {
+      return asyncFile.toFlowable();
+    });
+
+    List<Flowable<Buffer>> bList = List.of(b1, b2);
+
+    Flowable<Buffer> bs = Flowable.concat(bList);
+//        .flatMap(asyncFile -> {
+//          log.info("asyncFile: {}");
+//          String targetUrl = String.format("http://%s/%s/%s?append=&position=%s", host, bucket, key, 0);
+//          log.info("targetUrl: " + targetUrl);
 //
-//        return upDownHttpClient.put(targetUrl, asyncFile.toFlowable())
-//          .doFinally(asyncFile::close);
+//          return
+//        });
+
+    String targetUrl = String.format("http://%s/%s/%s?append=&position=%s", host, bucket, key, 0);
+    long filesize = 66560 * 2;
+    upDownHttpClient.post(targetUrl, bs, filesize).doOnSuccess(buffer -> {
+      System.out.println("response: " + buffer.toString());
+    })
+      .subscribe();
+
+//    response.flatMap(
+//      buffer -> {
+//        String position = buffer.toString();
+//        return fs.rxOpen("test_file.txt", new OpenOptions().setRead(true))
+//          .flatMap(asyncFile -> {
+//            log.info("asyncFile: {}");
+//            String targetUrl = String.format("http://%s/%s/%s?append=&position=%s", host, bucket, key, position);
+//            log.info("targetUrl: " + targetUrl);
+//
+//            return upDownHttpClient.post(targetUrl, asyncFile.toFlowable(), asyncFile.sizeBlocking())
+//              .doFinally(asyncFile::close);
+//          });
+//      }
+//    )
+//      .subscribe();
+
+//    Single<Buffer> bufferSingle = upDownHttpClient.delete(targetUrl);
+//    int datalength = bufferSingle
+//      .flatMap(buffer -> {
+//        return Single.just(buffer.length());
 //      })
-//      .doOnSuccess(responseBody -> log.info("Upload processing completed successfully, Response Body {}", responseBody.toString()))
-//      .doOnError(error -> log.info("Operation failed: {}", error))
-//      .ignoreElement()
-//      .subscribe(
-//        () -> log.info("Upload and close operation COMPLETED."),
-//        error -> log.error("Upload and close operation FAILED.", error)
-//      );
-
-    Single<Buffer> bufferSingle = upDownHttpClient.delete(targetUrl);
-    int datalength = bufferSingle
-      .flatMap(buffer -> {
-        return Single.just(buffer.length());
-      })
-      .blockingGet();
-
-    System.out.println(datalength);
+//      .blockingGet();
+//
+//    System.out.println(datalength);
 
     //subscribe.dispose();
   }

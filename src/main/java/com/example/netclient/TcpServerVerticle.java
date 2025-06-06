@@ -42,7 +42,11 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
+
+import static com.example.netclient.RequestState.CACHE_THRESHOLD;
 
 
 @Slf4j
@@ -79,7 +83,7 @@ public class TcpServerVerticle extends AbstractVerticle {
   private static final Map<ByteArrayKeyWrapper, ByteArrayKeyWrapper> fileHandleToParentFileHandle = new ConcurrentHashMap<>();
   private static final Map<ByteArrayKeyWrapper, List<ByteArrayKeyWrapper>> fileHandleToChildrenFileHandle = new ConcurrentHashMap<>();
 
-  private static final Map<ByteArrayKeyWrapper, Integer> fileHandleState = new ConcurrentHashMap<>();
+  private static final Map<ByteArrayKeyWrapper, AtomicLong> fileHandleNextAppendingPosition = new ConcurrentHashMap<>();
 
   private static final String STATIC_FILES_ROOT = "public";
   private static final String S3HOST = "172.20.123.124";
@@ -133,8 +137,8 @@ public class TcpServerVerticle extends AbstractVerticle {
         });
 
       // 订阅启动整个链
-      Subscriber<Buffer> socketSubscriber = socket.toSubscriber();
-      response.safeSubscribe(socketSubscriber);
+      //Subscriber<Buffer> socketSubscriber = socket.toSubscriber();
+      response.subscribe(socket.toSubscriber());
     });
 
     // 启动服务器并监听端口
@@ -255,7 +259,7 @@ public class TcpServerVerticle extends AbstractVerticle {
       }
     }
 
-    //Vertx vertx = Vertx.vertx();
+    Vertx vertx = Vertx.vertx();
     HttpClient client = vertx.createHttpClient();
     String host = "172.20.123.124";
     String bucket = "mybucket";
@@ -574,11 +578,18 @@ public class TcpServerVerticle extends AbstractVerticle {
     int fileType = getFileType(filename);
 
     FAttr3 objAttributes = fileHandleToFAttr3.getOrDefault(new ByteArrayKeyWrapper(fhandle), null);
-    GETATTR3resok getattr3resok = GETATTR3resok.builder()
-      .objAttributes(objAttributes)
-      .build();
+    GETATTR3res getattr3res = null;
+    if (objAttributes != null) {
+      GETATTR3resok getattr3resok = GETATTR3resok.builder()
+        .objAttributes(objAttributes)
+        .build();
 
-    GETATTR3res getattr3res = GETATTR3res.createSuccess(getattr3resok);
+      getattr3res = GETATTR3res.createOk(getattr3resok);
+    } else {
+      GETATTR3resfail getattr3resfail = GETATTR3resfail.builder().build();
+      getattr3res = GETATTR3res.createFail(NfsStat3.NFS3ERR_SERVERFAULT, getattr3resfail);
+    }
+
 
     int rpcNfsLength = getattr3res.getSerializedSize();
     Flowable<Buffer> rpcNfsBuffer = getattr3res.serializeToFlowable();
@@ -808,8 +819,8 @@ public class TcpServerVerticle extends AbstractVerticle {
 
     ByteArrayKeyWrapper byteArrayKeyWrapper = new ByteArrayKeyWrapper(fhandle);
     // 检查是否需要缓存数据
-    Single<WRITE3res> write3res = Single.never();
-    if (RequestState.shouldCache(byteArrayKeyWrapper)) {
+    //Single<WRITE3res> write3res = Single.never();
+    //if (data.length() >= RequestState.CACHE_THRESHOLD && RequestState.shouldCache(byteArrayKeyWrapper)) {
       requestCache.compute(byteArrayKeyWrapper, (key, existingList) -> {
         if (existingList == null) {
           existingList = new ArrayList<>(); // Consider Collections.synchronizedList or CopyOnWriteArrayList if accessed outside compute
@@ -817,22 +828,22 @@ public class TcpServerVerticle extends AbstractVerticle {
         existingList.add(data);
         return existingList;
       });
+      FAttr3 attributes = fileHandleToFAttr3.computeIfPresent(byteArrayKeyWrapper, (key, value) -> {
+        int used = (dataOfLength + 4096 - 1) / 4096 * 4096;
+        value.setSize(dataOfLength);
+        value.setUsed(used);
+        return value;
+      });
       PreOpAttr before = PreOpAttr.builder().attributesFollow(0).build();
       PostOpAttr after = PostOpAttr.builder().attributesFollow(0).build();
 
       WccData fileWcc = WccData.builder().before(before).after(after).build();
-      WRITE3resok write3resok = WRITE3resok.builder()
-        .fileWcc(fileWcc)
-        .count(count)
-        .committed(WRITE3resok.StableHow.UNSTABLE)
-        .verifier(0L)
-        .build();
+      WRITE3resok write3resok = WRITE3resok.builder().fileWcc(fileWcc).count(count).committed(WRITE3resok.StableHow.UNSTABLE).verifier(0L).build();
 
-      write3res = Single.just(WRITE3res.createOk(write3resok));
-    } else {
-      write3res = handleNfsWriteAsync(fhandle, data, dataOfLength, count);
-    }
-
+      Single<WRITE3res> write3res = Single.just(WRITE3res.createOk(write3resok));
+//    } else {
+//      write3res = handleNfsWriteAsync(fhandle, data, dataOfLength, count);
+//    }
 
     // Create reply
     final int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
@@ -875,7 +886,7 @@ public class TcpServerVerticle extends AbstractVerticle {
             WRITE3resok write3resok = WRITE3resok.builder()
               .fileWcc(fileWcc)
               .count(count)
-              .committed(WRITE3resok.StableHow.DATA_SYNC)
+              .committed(WRITE3resok.StableHow.UNSTABLE)
               .verifier(0L)
               .build();
 
@@ -1358,9 +1369,14 @@ public class TcpServerVerticle extends AbstractVerticle {
     return fullResponseBuffer.array();
   }
 
+  private final Map<ByteArrayKeyWrapper, AtomicLong> fileHandleAdder = new ConcurrentHashMap<>();
+
   private Flowable<Buffer> createNfsCommitReply(int xid, Buffer request, int startOffset) throws IOException, URISyntaxException {
     int fileHandleLength = request.getInt(startOffset);
     byte[] fileHandle = request.slice(startOffset + 4, startOffset + 4 + fileHandleLength).getBytes();
+    int padding = (fileHandleLength + 4 - 1) / 4 * 4;
+    int offset = request.getInt(startOffset + 4 + padding);
+    int count = request.getInt(startOffset + 4 + padding + 4);
 
     // Create reply
     final int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
@@ -1375,23 +1391,43 @@ public class TcpServerVerticle extends AbstractVerticle {
     //   post_op_attr present flag (4 bytes)
 
     ByteArrayKeyWrapper keyWrapper = new ByteArrayKeyWrapper(fileHandle);
-    fileHandleState.put(keyWrapper, 1);
+    AtomicLong nextAppendingPosition = fileHandleNextAppendingPosition.compute(keyWrapper, (k, v) -> {
+      if (v == null) return new AtomicLong(0);
+      return v;
+    });
 
     Single<COMMIT3res> response = Single.never();
-    List<Buffer> currentDataList = requestCache.getOrDefault(keyWrapper, null);
+    List<Buffer> currentDataList = requestCache.remove(keyWrapper);
     if (currentDataList != null) {
+      log.info("commit -- synchronized (currentDataList) begin");
+
       synchronized (currentDataList) {
-        Buffer combinedBuffer = Buffer.buffer();
-        for (Buffer currentData : currentDataList) {
-          combinedBuffer.appendBuffer(currentData);
-        }
-        log.info("commit -- upload buffer length: {}", combinedBuffer.length());
+//        Buffer combinedBuffer = Buffer.buffer();
+//        for (Buffer currentData : currentDataList) {
+//          combinedBuffer.appendBuffer(currentData);
+//        }
+//        currentDataList.clear();
+        //long bufferLength = combinedBuffer.length();
+//g.info("commit -- upload buffer length: {}, offset: {}, count: {}", combinedBuffer.length(), nextAppendingPosition.getAndAdd(bufferLength), bufferLength);
         String filename = fileHandleToFileName.getOrDefault(keyWrapper,"");
-        String targetUrl = String.format("http://%s/%s/%s", S3HOST, BUCKET, filename);
-        Flowable<Buffer> fileBodyFlowable = Flowable.just(combinedBuffer);
-        response = upDownHttpClient.put(targetUrl, fileBodyFlowable).subscribeOn(Schedulers.io()).observeOn(Schedulers.io())
+        //long position = adder.addAndGet(combinedBuffer.length());
+        int bufferLength = currentDataList.stream().mapToInt(Buffer::length).sum();
+        Flowable<Buffer> fileBodyFlowable = Flowable.fromIterable(currentDataList);
+
+        String targetUrl = String.format("http://%s/%s/%s?append=&position=%s", S3HOST, BUCKET, filename, nextAppendingPosition.getAndAdd(bufferLength));
+
+        log.info("commit start -- upload buffer length: {}, offset: {}, count: {}", bufferLength, nextAppendingPosition.get(), bufferLength);
+        response = upDownHttpClient.post(targetUrl, fileBodyFlowable, bufferLength).subscribeOn(Schedulers.newThread()).observeOn(Schedulers.newThread())
+          .doOnSuccess(buffer -> {
+            log.info("upload buffer length: {} -- commit end ---", buffer.toString());
+          })
           .flatMap(buffer -> {
-            FAttr3 attritbutes = fileHandleToFAttr3.getOrDefault(keyWrapper, null);
+            FAttr3 attritbutes = fileHandleToFAttr3.computeIfPresent(keyWrapper, (key, value) -> {
+              long used = (nextAppendingPosition.get() + 4096 - 1) / 4096 * 4096;
+              value.setSize(nextAppendingPosition.get());
+              value.setUsed(used);
+              return value;
+            });
 
             PreOpAttr befor = PreOpAttr.builder().attributesFollow(0).build();
             PostOpAttr after = PostOpAttr.builder().attributesFollow(attritbutes != null ? 1 : 0).attributes(attritbutes).build();
@@ -1403,19 +1439,15 @@ public class TcpServerVerticle extends AbstractVerticle {
           });
       }
     } else {
+      log.info("commit -- else branch, offset: {}, count: {}", offset, count);
+
       FAttr3 attritbutes = fileHandleToFAttr3.getOrDefault(keyWrapper, null);
 
       PreOpAttr befor = PreOpAttr.builder().attributesFollow(0).build();
       PostOpAttr after = PostOpAttr.builder().attributesFollow(attritbutes != null ? 1 : 0).attributes(attritbutes).build();
 
-      WccData fileWcc =  WccData.builder()
-        .before(befor)
-        .after(after)
-        .build();
-      COMMIT3resok commit3resok = COMMIT3resok.builder()
-        .fileWcc(fileWcc)
-        .verifier(0L)
-        .build();
+      WccData fileWcc =  WccData.builder().before(befor).after(after).build();
+      COMMIT3resok commit3resok = COMMIT3resok.builder().fileWcc(fileWcc).verifier(0L).build();
 
       response = Single.just(COMMIT3res.createSuccess(commit3resok));
     }
@@ -1549,7 +1581,6 @@ public class TcpServerVerticle extends AbstractVerticle {
   }
 
   private Flowable<Buffer> createNfsMkdirReply(int xid, Buffer request, int startOffset) throws IOException {
-
     MKDIR3args mkdir3args = new MKDIR3args();
     mkdir3args.deserialize(request, startOffset);
 
