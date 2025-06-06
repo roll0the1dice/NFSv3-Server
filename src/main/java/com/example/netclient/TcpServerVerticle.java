@@ -9,7 +9,10 @@ import com.example.netclient.utils.ByteArrayKeyWrapper;
 import com.example.netclient.utils.EnumUtil;
 import com.example.netclient.utils.NetTool;
 import com.example.netclient.utils.RpcUtil;
+import io.reactivex.Completable;
 import io.reactivex.Flowable;
+import io.reactivex.Single;
+import io.reactivex.schedulers.Schedulers;
 import io.vertx.core.Promise;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.net.NetServerOptions;
@@ -37,6 +40,7 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 
@@ -248,14 +252,14 @@ public class TcpServerVerticle extends AbstractVerticle {
       String receivedData = fullMessage.toString("UTF-8");
       log.info("从客户端 [" + socket.remoteAddress() + "] 收到数据大小: " + receivedData.length());
 
-      log.info("Raw request buffer (" + fullMessage.length() + " bytes):");
-      // 简单的十六进制打印
-      for (int i = 0; i < fullMessage.length(); i++) {
-        System.out.printf("%02X ", fullMessage.getByte(i));
-        if ((i + 1) % 16 == 0 || i == fullMessage.length() - 1) {
-          System.out.println();
-        }
-      }
+//      log.info("Raw request buffer (" + fullMessage.length() + " bytes):");
+//      // 简单的十六进制打印
+//      for (int i = 0; i < fullMessage.length(); i++) {
+//        System.out.printf("%02X ", fullMessage.getByte(i));
+//        if ((i + 1) % 16 == 0 || i == fullMessage.length() - 1) {
+//          System.out.println();
+//        }
+//      }
       log.info("---- End of Raw request Buffer ----");
 
       // Parse RPC header
@@ -535,15 +539,15 @@ public class TcpServerVerticle extends AbstractVerticle {
 
         Buffer replyBuffer = Buffer.buffer(xdrReplyBytes);
 
-        log.info("Raw response buffer (" + buffer.length() + " bytes):");
-        // 简单的十六进制打印
-        for (int i = 0; i < replyBuffer.length(); i++) {
-          System.out.printf("%02X ", replyBuffer.getByte(i));
-          if ((i + 1) % 16 == 0 || i == replyBuffer.length() - 1) {
-            System.out.println();
-          }
-        }
-        log.info("---- End of Raw response Buffer ----");
+//        log.info("Raw response buffer (" + buffer.length() + " bytes):");
+//        // 简单的十六进制打印
+//        for (int i = 0; i < replyBuffer.length(); i++) {
+//          System.out.printf("%02X ", replyBuffer.getByte(i));
+//          if ((i + 1) % 16 == 0 || i == replyBuffer.length() - 1) {
+//            System.out.println();
+//          }
+//        }
+//        log.info("---- End of Raw response Buffer ----");
 
         socket.write(replyBuffer);
       }
@@ -588,11 +592,21 @@ public class TcpServerVerticle extends AbstractVerticle {
     int fileType = getFileType(filename);
 
     FAttr3 objAttributes = fileHandleToFAttr3.getOrDefault(new ByteArrayKeyWrapper(fhandle), null);
-    GETATTR3resok getattr3resok = GETATTR3resok.builder()
-      .objAttributes(objAttributes)
-      .build();
 
-    GETATTR3res getattr3res = GETATTR3res.createSuccess(getattr3resok);
+    GETATTR3res getattr3res = null;
+    if (objAttributes != null) {
+
+      GETATTR3resok getattr3resok = GETATTR3resok.builder()
+        .objAttributes(objAttributes)
+        .build();
+
+      getattr3res = GETATTR3res.createOk(getattr3resok);
+    } else {
+      GETATTR3resfail getattr3resfail = GETATTR3resfail.builder().build();
+
+      getattr3res = GETATTR3res.createFail(NfsStat3.NFS3ERR_SERVERFAULT, getattr3resfail);
+    }
+
 
     int rpcNfsLength = getattr3res.getSerializedSize();
     ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
@@ -835,6 +849,8 @@ public class TcpServerVerticle extends AbstractVerticle {
     return fullResponseBuffer.array();
   }
 
+  private static final ConcurrentHashMap<ByteArrayKeyWrapper, List<Buffer>> requestCache = new ConcurrentHashMap<>();
+
   private byte[] createNfsWriteReply(int xid, Buffer request, int startOffset) throws IOException, URISyntaxException {
     // Parse file handle, offset, and data from request
     int fhandleLength = request.getInt(startOffset);
@@ -843,10 +859,10 @@ public class TcpServerVerticle extends AbstractVerticle {
     int count = request.getInt(startOffset + 4 + fhandleLength + 8);
     int stable = request.getInt(startOffset + 4 + fhandleLength + 8 + 4);
     int dataOfLength = request.getInt(startOffset + 4 + fhandleLength + 8);
-    byte[] data = request.slice(startOffset + 4 + fhandleLength + 8 + 12,
-        startOffset + 4 + fhandleLength + 8 + 12 + dataOfLength).getBytes();
+    Buffer data = request.slice(startOffset + 4 + fhandleLength + 8 + 12,
+        startOffset + 4 + fhandleLength + 8 + 12 + dataOfLength);
 
-    log.info("NFS Write Reply: {}", new String(data, StandardCharsets.UTF_8));
+    //log.info("NFS Write Reply: {}", new String(data, StandardCharsets.UTF_8));
 
     // Create reply
     final int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
@@ -860,11 +876,18 @@ public class TcpServerVerticle extends AbstractVerticle {
     FAttr3 attributes = fileHandleToFAttr3.getOrDefault(byteArrayKeyWrapper, null);
 
     if (attributes != null) {
-      String filename = fileHandleToFileName.getOrDefault(byteArrayKeyWrapper,"");
-      String targetUrl = String.format("http://%s/%s/%s", S3HOST, BUCKET, filename);
-      Flowable<Buffer> fileBodyFlowable = Flowable.just(Buffer.buffer(data));
-      Buffer buffer = upDownHttpClient.put(targetUrl, fileBodyFlowable).blockingGet();
-      log.info("S3 Upload Response: {}", buffer.toString());
+//      String filename = fileHandleToFileName.getOrDefault(byteArrayKeyWrapper,"");
+//      String targetUrl = String.format("http://%s/%s/%s", S3HOST, BUCKET, filename);
+//      Flowable<Buffer> fileBodyFlowable = Flowable.just(Buffer.buffer(data));
+//      Buffer buffer = upDownHttpClient.put(targetUrl, fileBodyFlowable).blockingGet();
+//      log.info("S3 Upload Response: {}", buffer.toString());
+      requestCache.compute(byteArrayKeyWrapper, (key, existingList) -> {
+        if (existingList == null) {
+          existingList = new ArrayList<>(); // Consider Collections.synchronizedList or CopyOnWriteArrayList if accessed outside compute
+        }
+        existingList.add(data);
+        return existingList;
+      });
 
       fileHandleToFAttr3.computeIfPresent(byteArrayKeyWrapper, (key, value) -> {
         int used = (dataOfLength + 4096 - 1) / 4096 * 4096;
@@ -1413,7 +1436,9 @@ public class TcpServerVerticle extends AbstractVerticle {
     return fullResponseBuffer.array();
   }
 
-  private byte[] createNfsCommitReply(int xid, Buffer request, int startOffset) throws IOException {
+  private final Map<ByteArrayKeyWrapper, AtomicLong> fileHandleNextAppendingPosition = new ConcurrentHashMap<>();
+
+  private byte[] createNfsCommitReply(int xid, Buffer request, int startOffset) throws IOException, URISyntaxException {
     // Create reply
     final int rpcHeaderLength = RpcConstants.RPC_ACCEPTED_REPLY_HEADER_LENGTH;
     ByteBuffer rpcHeaderBuffer = RpcUtil.createAcceptedSuccessReplyHeaderBuffer(xid);
@@ -1430,21 +1455,82 @@ public class TcpServerVerticle extends AbstractVerticle {
     //   post_op_attr present flag (4 bytes)
 
     ByteArrayKeyWrapper keyWrapper = new ByteArrayKeyWrapper(fileHandle);
-    FAttr3 attritbutes = fileHandleToFAttr3.getOrDefault(keyWrapper, null);
+    AtomicLong nextAppendingPosition = fileHandleNextAppendingPosition.compute(keyWrapper, (k, v) -> {
+      if (v == null) return new AtomicLong(0);
+      return v;
+    });
 
-    PreOpAttr befor = PreOpAttr.builder().attributesFollow(0).build();
-    PostOpAttr after = PostOpAttr.builder().attributesFollow(attritbutes != null ? 1 : 0).attributes(attritbutes).build();
+    COMMIT3res commit3res = null;
+    List<Buffer> currentDataList = requestCache.remove(keyWrapper);
+    if (currentDataList != null) {
+      log.info("commit -- synchronized (currentDataList) begin");
 
-    WccData fileWcc =  WccData.builder()
-      .before(befor)
-      .after(after)
-      .build();
-    COMMIT3resok commit3resok = COMMIT3resok.builder()
-      .fileWcc(fileWcc)
-      .verifier(0L)
-      .build();
+      synchronized (currentDataList) {
+//        Buffer combinedBuffer = Buffer.buffer();
+//        for (Buffer currentData : currentDataList) {
+//          combinedBuffer.appendBuffer(currentData);
+//        }
+//        currentDataList.clear();
+        //long bufferLength = combinedBuffer.length();
+//g.info("commit -- upload buffer length: {}, offset: {}, count: {}", combinedBuffer.length(), nextAppendingPosition.getAndAdd(bufferLength), bufferLength);
+        String filename = fileHandleToFileName.getOrDefault(keyWrapper,"");
+        //long position = adder.addAndGet(combinedBuffer.length());
+        int bufferLength = currentDataList.stream().mapToInt(Buffer::length).sum();
+        //Flowable<Buffer> fileBodyFlowable = Flowable.fromIterable(currentDataList);
+        Flowable<Buffer> fileBodyFlowable = Flowable.fromIterable(currentDataList).collect(
+          Buffer::buffer,      // 初始值：创建一个新的空 Buffer
+          Buffer::appendBuffer // 累加器：将流中的每个 buffer 追加到累加的 buffer 上
+          // 这等同于 (cumulativeBuffer, nextBuffer) -> cumulativeBuffer.appendBuffer(nextBuffer)
+        ).toFlowable();
 
-    COMMIT3res commit3res = COMMIT3res.createSuccess(commit3resok);
+        String targetUrl = String.format("http://%s/%s/%s?append=&position=%s", S3HOST, BUCKET, filename, nextAppendingPosition.get());
+        log.info("commit start -- upload buffer length: {}, offset: {}, count: {}", bufferLength, nextAppendingPosition.get(), bufferLength);
+        nextAppendingPosition.getAndAdd(bufferLength);
+        upDownHttpClient.post(targetUrl, fileBodyFlowable, bufferLength).observeOn(Schedulers.io())
+          .doOnSuccess(buffer -> {
+            log.info("upload buffer length: {} -- commit end ---", buffer.toString());
+          }).flatMapCompletable(buffer -> {
+            long nextPosition = Long.parseLong(buffer.toString());
+            if (nextAppendingPosition.get() != nextPosition) {
+              nextAppendingPosition.set(nextPosition);
+            }
+            //  return Completable.error(new RuntimeException("commit failed"));
+            //}
+
+            return Completable.complete();
+          }).subscribe();
+
+
+
+        FAttr3 attritbutes = fileHandleToFAttr3.computeIfPresent(keyWrapper, (key, value) -> {
+          long used = (nextAppendingPosition.get() + 4096 - 1) / 4096 * 4096;
+          value.setSize(nextAppendingPosition.get());
+          value.setUsed(used);
+          return value;
+        });
+
+        PreOpAttr befor = PreOpAttr.builder().attributesFollow(0).build();
+        PostOpAttr after = PostOpAttr.builder().attributesFollow(attritbutes != null ? 1 : 0).attributes(attritbutes).build();
+
+        WccData fileWcc =  WccData.builder().before(befor).after(after).build();
+        COMMIT3resok commit3resok = COMMIT3resok.builder().fileWcc(fileWcc).verifier(0L).build();
+
+        commit3res = COMMIT3res.createSuccess(commit3resok);
+      }
+    } else {
+      //log.info("commit -- else branch, offset: {}, count: {}", offset, count);
+
+      FAttr3 attritbutes = fileHandleToFAttr3.getOrDefault(keyWrapper, null);
+
+      PreOpAttr befor = PreOpAttr.builder().attributesFollow(0).build();
+      PostOpAttr after = PostOpAttr.builder().attributesFollow(attritbutes != null ? 1 : 0).attributes(attritbutes).build();
+
+      WccData fileWcc =  WccData.builder().before(befor).after(after).build();
+      COMMIT3resok commit3resok = COMMIT3resok.builder().fileWcc(fileWcc).verifier(0L).build();
+
+      commit3res = COMMIT3res.createSuccess(commit3resok);
+    }
+
     int rpcNfsLength = commit3res.getSerializedSize();
     ByteBuffer rpcNfsBuffer = ByteBuffer.allocate(rpcNfsLength);
     rpcNfsBuffer.order(ByteOrder.BIG_ENDIAN);

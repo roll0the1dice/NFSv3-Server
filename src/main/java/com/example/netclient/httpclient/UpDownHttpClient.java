@@ -129,6 +129,7 @@ public class UpDownHttpClient {
 
         return httpClientRequest.rxSend(fileBodyFlowable);
       })
+      .subscribeOn(Schedulers.io())
       .flatMap(httpClientResponse -> {
         System.out.println("Upload successful! Server response status: " + httpClientResponse.statusCode() + " " + httpClientResponse.statusMessage());
         if (httpClientResponse.statusCode() >= 200 && httpClientResponse.statusCode() < 300) {
