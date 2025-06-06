@@ -102,6 +102,45 @@ public class UpDownHttpClient {
     return responseBodySingle;
   }
 
+  public Single<Buffer> post(String targetUrl, Flowable<Buffer> fileBodyFlowable, long fileSize) throws URISyntaxException {
+    URI uri = new URI(targetUrl);
+    String host = uri.getHost();
+    String resourcePath = uri.getPath();
+    String query = uri.getQuery();
+    AwsSigner awsSigner = AwsSignerCreater.createSigner(signerType, accessKey, secretKey, region, service);
+
+    Single<HttpClientRequest> requestSingle = client.rxRequest(HttpMethod.POST, 80, host, resourcePath + "?" + query);
+    Single<Buffer> responseBodySingle = requestSingle.flatMap(httpClientRequest -> {
+        Map<String, String> pseudoHeaders = new HashMap<>();
+        pseudoHeaders.put("x-amz-content-sha256", "UNSIGNED-PAYLOAD");
+        pseudoHeaders.put("Content-Length", String.valueOf(fileSize));
+
+        String authorization = awsSigner.calculateAuthorization(String.valueOf(HttpMethod.POST), targetUrl, pseudoHeaders, null);
+
+        for (Map.Entry<String, String> entry : pseudoHeaders.entrySet()) {
+          httpClientRequest.putHeader(entry.getKey(), entry.getValue());
+        }
+        httpClientRequest.putHeader("Authorization", authorization);
+        if (signerType == AwsSignerCreater.SignerType.AWS_V2) {
+          httpClientRequest.putHeader("Date", awsSigner.getAmzDate());
+        } else {
+          httpClientRequest.putHeader("x-amz-date", awsSigner.getAmzDate());
+        }
+
+        return httpClientRequest.rxSend(fileBodyFlowable);
+      })
+      .flatMap(httpClientResponse -> {
+        System.out.println("Upload successful! Server response status: " + httpClientResponse.statusCode() + " " + httpClientResponse.statusMessage());
+        if (httpClientResponse.statusCode() >= 200 && httpClientResponse.statusCode() < 300) {
+          return Single.just(Buffer.buffer(httpClientResponse.headers().get("x-amz-next-append-position")));
+        } else {
+          return httpClientResponse.rxBody();
+        }
+      });
+
+    return responseBodySingle;
+  }
+
   public static void main(String[] args) throws URISyntaxException {
     Vertx vertx = Vertx.vertx();
     FileSystem fs = vertx.fileSystem();
